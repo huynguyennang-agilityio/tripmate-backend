@@ -64,6 +64,7 @@ def module_folder() -> Iterator[Callable[[dict[str, str]], str]]:
     finally:
         for name in created:
             shutil.rmtree(APP_DIR / name, ignore_errors=True)
-            for loaded in [m for m in sys.modules if m == f"app.{name}" or m.startswith(f"app.{name}.")]:
+            package = f"app.{name}"
+            for loaded in [m for m in sys.modules if m == package or m.startswith(f"{package}.")]:
                 del sys.modules[loaded]
         importlib.invalidate_caches()

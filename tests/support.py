@@ -94,8 +94,9 @@ def build_app() -> Any:
     return create_app()
 
 
-def route_paths(app: Any) -> list[str]:
-    return sorted(getattr(route, "path", "") for route in app.routes)
+def openapi_paths(app: Any) -> list[str]:
+    """The paths of the app's public OpenAPI document, in order."""
+    return sorted(app.openapi()["paths"])
 
 
 @contextlib.asynccontextmanager

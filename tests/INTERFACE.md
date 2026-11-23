@@ -59,9 +59,18 @@ read), read once at start-up and checked.
   contains no setting's value: not the database address, not the
   password inside it, not the Redis address, not the release version,
   not the port.
-- A setting with a value of the wrong type, for example
-  `PORT=not-a-number` (F1-5): the process exits with a non-zero code
-  within 30 seconds, and its output contains the setting's name.
+- A setting with a value of the wrong type or the wrong shape (F1-5):
+  the process exits with a non-zero code within 30 seconds, its output
+  contains the setting's name, and it contains no part of the value
+  (not the whole value, not the password, host, or port inside it).
+  The cases:
+
+  | Setting | Wrong value |
+  |---------|-------------|
+  | `PORT` | `not-a-number` |
+  | `DATABASE_URL` | `postgresql://tripmate:<random password>.<random host>/tripmate` (the `@` is missing) |
+  | `DATABASE_URL` | `postgresql+asyncpg://tripmate:<random password>@<random host>:<non-numeric port>/tripmate` |
+  | `REDIS_URL` | `redis://<random host>:<non-numeric port>/0` |
 
 ## Processes
 
@@ -122,12 +131,16 @@ app = create_app()   # a FastAPI app, built from the current environment
   async def probe() -> dict[str, str]: ...
   ```
 
-  The route is served at a path that ends in `/<segment>` (any prefix
-  the platform adds is allowed, for example `/v1/<segment>`); exactly
-  one route of the app ends that way, and `GET` on it returns the
-  handler's JSON with `200`.
+  The route is served at `/v1/<segment>`: `GET /v1/<segment>` returns
+  the handler's JSON with `200`. The app's public OpenAPI document
+  (`app.openapi()["paths"]`) lists `/v1/<segment>`, and no other path
+  of it ends in `/<segment>`. An app built without the folder answers
+  `GET /v1/<segment>` with `404`.
+- The tests read the routes only through HTTP and the OpenAPI document,
+  never through FastAPI's internal route list (`app.routes`).
 - Adding the folder changes no other file: building the app and serving
   the route writes no file outside the folder, other than `__pycache__`
   and files git ignores.
 - When the folder has no `api.py` (F1-8), the app still builds and
-  starts, and its routes are the same as without the folder.
+  starts, and its OpenAPI paths (`app.openapi()["paths"]`) are the same
+  as without the folder.
