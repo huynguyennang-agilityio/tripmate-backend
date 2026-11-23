@@ -11,6 +11,7 @@ import sys
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from redis import ConnectionPool
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
@@ -44,9 +45,10 @@ class Settings(BaseModel):
     @field_validator("database_url")
     @classmethod
     def _postgresql_with_asyncpg(cls, value: str) -> str:
+        # Every message here is fixed text: a parser's own message can quote the value.
         try:
             url = make_url(value)
-        except ArgumentError:
+        except (ArgumentError, ValueError):
             raise ValueError("not a valid database address") from None
         # Render gives `postgresql://`; the app always talks to it through asyncpg.
         if url.drivername == "postgresql":
@@ -60,6 +62,10 @@ class Settings(BaseModel):
     def _redis(cls, value: str) -> str:
         if not value.startswith(("redis://", "rediss://")):
             raise ValueError("must be a redis:// or rediss:// address")
+        try:
+            ConnectionPool.from_url(value)  # parses only; nothing connects
+        except ValueError:
+            raise ValueError("not a valid Redis address") from None
         return value
 
 
