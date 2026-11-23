@@ -1,0 +1,109 @@
+[project]
+name = "tripmate-backend"
+version = "0.1.0"
+description = "TripMate backend: FastAPI app, worker, scheduler, migrations"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+# Every dependency of the EPIC-11 spec, section 4.1, is here from the
+# skeleton on, so later cards never meet in the lock file.
+dependencies = [
+    # 0.137 stopped listing the routes of an included router in `app.routes`,
+    # which the F1-7 test reads to find a module's route.
+    "fastapi>=0.136,<0.137",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    "sqlalchemy[asyncio]>=2",
+    "asyncpg",
+    "alembic",
+    "taskiq",
+    "taskiq-redis",
+    "redis",
+    "structlog",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
+    "import-linter",
+    "pytest",
+    "pytest-asyncio",
+    "hypothesis",
+    "schemathesis",
+    "httpx",
+    "mutmut",
+    "pip-audit",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.format]
+# Markdown is not formatted. The two test files are locked test-agent files
+# that do not follow the format; a test-agent session can format them and
+# remove them from this list.
+exclude = [
+    "*.md",
+    "tests/conftest.py",
+    "tests/integration/platform/test_F1_module_route.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S", "N"]
+# The formatter decides line length.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use assert, and their names carry requirement IDs such as F1_1.
+"tests/**" = ["S101", "S603", "S607", "N802", "N999"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.importlinter]
+root_package = "app"
+
+# `platform` imports no module and no process (EPIC-11 spec, section 2.1).
+# Modules register with it instead, and it finds them by scanning `app/`.
+[[tool.importlinter.contracts]]
+name = "platform imports no module"
+type = "forbidden"
+source_modules = ["app.platform"]
+forbidden_modules = ["app.*"]
+ignore_imports = ["app.platform.** -> app.platform.**"]
+unmatched_ignore_imports_alerting = "none"
+
+# A module imports only another module's `service.py`, and `platform`
+# (architecture.md, section 4). The three processes may import anything.
+[[tool.importlinter.contracts]]
+name = "modules use each other only through service.py"
+type = "independence"
+modules = ["app.*"]
+ignore_imports = [
+    "app.** -> app.platform.**",
+    "app.** -> app.*.service",
+    "app.main -> app.**",
+    "app.worker -> app.**",
+    "app.scheduler -> app.**",
+]
+unmatched_ignore_imports_alerting = "none"
+
+# The modules depend on each other without cycles (architecture.md, section 4).
+[[tool.importlinter.contracts]]
+name = "no cycles between modules"
+type = "acyclic_siblings"
+ancestors = ["app"]
+depth = 1

@@ -1,0 +1,64 @@
+# The local stack (EPIC-11 spec, section 2.8): `docker compose up`.
+# The API, the worker, and the scheduler run from the one backend image.
+# Local only: PostgreSQL accepts connections without a password, so no
+# secret is needed here, and every port is bound to 127.0.0.1.
+name: tripmate
+
+x-backend: &backend
+  build: .
+  image: tripmate-backend:local
+  environment:
+    DATABASE_URL: postgresql+asyncpg://tripmate@postgres:5432/tripmate
+    REDIS_URL: redis://redis:6379/0
+    RELEASE_VERSION: local
+    PORT: "8000"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tripmate
+      POSTGRES_DB: tripmate
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "tripmate", "-d", "tripmate"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  api:
+    <<: *backend
+    command: ["python", "-m", "app.main"]
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+
+  scheduler:
+    <<: *backend
+    command: ["python", "-m", "app.scheduler"]
+
+volumes:
+  postgres-data:
