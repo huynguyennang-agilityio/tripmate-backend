@@ -2,6 +2,7 @@
 # The API, the worker, and the scheduler run from the one backend image.
 # Local only: PostgreSQL accepts connections without a password, so no
 # secret is needed here, and every port is bound to 127.0.0.1.
+# POSTGRES_HOST_PORT moves PostgreSQL's host port when 5432 is taken.
 name: tripmate
 
 x-backend: &backend
@@ -27,7 +28,7 @@ services:
       POSTGRES_DB: tripmate
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

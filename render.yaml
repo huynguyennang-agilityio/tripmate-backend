@@ -1,6 +1,8 @@
 # Render blueprint, production until the beta (EPIC-11 spec, section 2.8):
-# one instance runs the API, the worker, and the scheduler together, with
-# Postgres and Key Value on their free plans, in Singapore.
+# one web instance on the free plan runs the API, the worker, and the
+# scheduler together, with Postgres and Key Value on their free plans, in
+# Singapore. The free instance sleeps when idle: the first request is slow
+# and jobs wait until it wakes.
 # Card F11 completes it: the image from GitHub Container Registry for each
 # release tag, migrations as the pre-deploy step, and the alerts.
 # Moving the processes to their own instances before the beta changes this
@@ -10,7 +12,7 @@ services:
     name: tripmate-api
     runtime: docker
     region: singapore
-    plan: starter
+    plan: free
     numInstances: 1
     dockerfilePath: ./Dockerfile
     dockerCommand: sh -c "python -m app.worker & python -m app.scheduler & exec python -m app.main"

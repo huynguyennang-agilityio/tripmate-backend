@@ -28,6 +28,10 @@ several machines".
 - `uv sync` installs every dependency from `uv.lock`.
 - The tests need a real PostgreSQL and Redis: `docker compose up -d
   postgres redis`, or your own.
+- When a PostgreSQL already runs on port 5432 (as on Mac 1), start the
+  local stack with another host port, for example
+  `POSTGRES_HOST_PORT=5433 docker compose up`, and use that port in
+  `TEST_DATABASE_URL`.
 
 ## Commands
 

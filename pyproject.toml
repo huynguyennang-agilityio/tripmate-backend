@@ -7,9 +7,7 @@ requires-python = ">=3.13,<3.14"
 # Every dependency of the EPIC-11 spec, section 4.1, is here from the
 # skeleton on, so later cards never meet in the lock file.
 dependencies = [
-    # 0.137 stopped listing the routes of an included router in `app.routes`,
-    # which the F1-7 test reads to find a module's route.
-    "fastapi>=0.136,<0.137",
+    "fastapi",
     "uvicorn[standard]",
     "pydantic>=2",
     "sqlalchemy[asyncio]>=2",
@@ -21,6 +19,14 @@ dependencies = [
     "structlog",
     "opentelemetry-api",
     "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-sqlalchemy",
+    "opentelemetry-instrumentation-redis",
+    # sentry-sdk 3 ships its FastAPI integration in the base package (no extra).
+    "sentry-sdk",
+    "pyjwt[crypto]",
+    "argon2-cffi",
 ]
 
 [dependency-groups]
@@ -45,14 +51,8 @@ target-version = "py313"
 line-length = 100
 
 [tool.ruff.format]
-# Markdown is not formatted. The two test files are locked test-agent files
-# that do not follow the format; a test-agent session can format them and
-# remove them from this list.
-exclude = [
-    "*.md",
-    "tests/conftest.py",
-    "tests/integration/platform/test_F1_module_route.py",
-]
+# Markdown is not formatted.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S", "N"]
