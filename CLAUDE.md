@@ -26,11 +26,11 @@ several machines".
 
 - Python 3.13 and [uv](https://docs.astral.sh/uv/).
 - `uv sync` installs every dependency from `uv.lock`.
-- The tests need a real PostgreSQL and Redis: `docker compose up -d
-  postgres redis`, or your own.
-- When a PostgreSQL already runs on port 5432 (as on Mac 1), start the
-  local stack with another host port, for example
-  `POSTGRES_HOST_PORT=5433 docker compose up`, and use that port in
+- The tests need a real PostgreSQL and Redis: `docker compose up -d`
+  (`compose.yaml` runs only these two), or your own.
+- When a PostgreSQL already runs on port 5432 (as on Mac 1), start it
+  with another host port, for example
+  `POSTGRES_HOST_PORT=5433 docker compose up -d`, and use that port in
   `TEST_DATABASE_URL`.
 
 ## Commands
@@ -41,8 +41,8 @@ several machines".
 | Lint and format | `uv run ruff check .` and `uv run ruff format --check .` |
 | Types | `uv run mypy app` |
 | Module boundaries | `uv run lint-imports` |
-| The whole local stack | `docker compose up` (API on `127.0.0.1:8000`) |
-| One process, from the repository root | `python -m app.main`, `python -m app.worker`, `python -m app.scheduler` |
+| Local PostgreSQL and Redis | `docker compose up -d` |
+| One process, from the repository root | `python -m app.main`, `python -m app.worker`, `python -m app.scheduler` (the image's default command is the API) |
 
 The tests are not safe to run in parallel. A test that needs PostgreSQL
 or Redis fails, never skips, when `TEST_DATABASE_URL` or

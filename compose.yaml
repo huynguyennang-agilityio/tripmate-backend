@@ -1,24 +1,10 @@
-# The local stack (EPIC-11 spec, section 2.8): `docker compose up`.
-# The API, the worker, and the scheduler run from the one backend image.
+# Local PostgreSQL and Redis for development and the tests (EPIC-11 spec,
+# section 2.1): `docker compose up -d`. Card F11 adds the API, the worker,
+# and the scheduler from the backend image, with seed data.
 # Local only: PostgreSQL accepts connections without a password, so no
 # secret is needed here, and every port is bound to 127.0.0.1.
 # POSTGRES_HOST_PORT moves PostgreSQL's host port when 5432 is taken.
 name: tripmate
-
-x-backend: &backend
-  build: .
-  image: tripmate-backend:local
-  environment:
-    DATABASE_URL: postgresql+asyncpg://tripmate@postgres:5432/tripmate
-    REDIS_URL: redis://redis:6379/0
-    RELEASE_VERSION: local
-    PORT: "8000"
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
-  restart: unless-stopped
 
 services:
   postgres:
@@ -46,20 +32,6 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
-
-  api:
-    <<: *backend
-    command: ["python", "-m", "app.main"]
-    ports:
-      - "127.0.0.1:8000:8000"
-
-  worker:
-    <<: *backend
-    command: ["python", "-m", "app.worker"]
-
-  scheduler:
-    <<: *backend
-    command: ["python", "-m", "app.scheduler"]
 
 volumes:
   postgres-data:
