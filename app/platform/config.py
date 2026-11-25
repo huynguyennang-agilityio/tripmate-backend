@@ -10,7 +10,7 @@ import os
 import sys
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 from redis import ConnectionPool
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -37,17 +37,19 @@ class SettingsError(Exception):
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    database_url: Annotated[str, Field(min_length=1)]
-    redis_url: Annotated[str, Field(min_length=1)]
+    # Both addresses can hold a password: `SecretStr` keeps them out of `repr()`
+    # and logs. They are unwrapped only where the engine and the Redis client are made.
+    database_url: Annotated[SecretStr, Field(min_length=1)]
+    redis_url: Annotated[SecretStr, Field(min_length=1)]
     release_version: Annotated[str, Field(min_length=1)]
     port: Annotated[int, Field(ge=1, le=65535)] = DEFAULT_PORT
 
     @field_validator("database_url")
     @classmethod
-    def _postgresql_with_asyncpg(cls, value: str) -> str:
+    def _postgresql_with_asyncpg(cls, secret: SecretStr) -> SecretStr:
         # Every message here is fixed text: a parser's own message can quote the value.
         try:
-            url = make_url(value)
+            url = make_url(secret.get_secret_value())
         except (ArgumentError, ValueError):
             raise ValueError("not a valid database address") from None
         # Render gives `postgresql://`; the app always talks to it through asyncpg.
@@ -55,18 +57,19 @@ class Settings(BaseModel):
             url = url.set(drivername="postgresql+asyncpg")
         if url.drivername != "postgresql+asyncpg":
             raise ValueError("must be a postgresql+asyncpg:// address")
-        return url.render_as_string(hide_password=False)
+        return SecretStr(url.render_as_string(hide_password=False))
 
     @field_validator("redis_url")
     @classmethod
-    def _redis(cls, value: str) -> str:
+    def _redis(cls, secret: SecretStr) -> SecretStr:
+        value = secret.get_secret_value()
         if not value.startswith(("redis://", "rediss://")):
             raise ValueError("must be a redis:// or rediss:// address")
         try:
             ConnectionPool.from_url(value)  # parses only; nothing connects
         except ValueError:
             raise ValueError("not a valid Redis address") from None
-        return value
+        return secret
 
 
 def _problem(error: Any) -> str:

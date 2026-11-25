@@ -26,8 +26,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        engine = create_engine(settings.database_url)
-        redis = create_redis(settings.redis_url)
+        # The only place the secret addresses are unwrapped.
+        engine = create_engine(settings.database_url.get_secret_value())
+        redis = create_redis(settings.redis_url.get_secret_value())
         app.state.resources = health.Resources(settings.release_version, engine, redis)
         try:
             yield
