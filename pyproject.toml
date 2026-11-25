@@ -7,13 +7,15 @@ requires-python = ">=3.13,<3.14"
 # Every dependency of the EPIC-11 spec, section 4.1, is here from the
 # skeleton on, so later cards never meet in the lock file.
 dependencies = [
-    "fastapi",
+    # Upper bounds at the next major version of the locked one (uv.lock); for a
+    # 0.x library that is 1.0.
+    "fastapi<1",
     "uvicorn[standard]",
-    "pydantic>=2",
-    "sqlalchemy[asyncio]>=2",
+    "pydantic>=2,<3",
+    "sqlalchemy[asyncio]>=2,<3",
     "asyncpg",
     "alembic",
-    "taskiq",
+    "taskiq<1",
     "taskiq-redis",
     "redis",
     "structlog",
@@ -24,7 +26,7 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-redis",
     # sentry-sdk 3 ships its FastAPI integration in the base package (no extra).
-    "sentry-sdk",
+    "sentry-sdk>=3,<4",
     "pyjwt[crypto]",
     "argon2-cffi",
 ]
