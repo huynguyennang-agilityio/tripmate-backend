@@ -12,7 +12,7 @@ from app.platform import health
 from app.platform.config import Settings, load_settings, load_settings_or_exit
 from app.platform.db import create_engine
 from app.platform.errors import install_error_handlers
-from app.platform.modules import include_module_routes
+from app.platform.modules import include_routes, scan_modules
 from app.platform.redis_client import create_redis
 
 
@@ -38,7 +38,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="TripMate", version=settings.release_version, lifespan=lifespan)
     install_error_handlers(app)
     app.include_router(health.router)
-    include_module_routes(app)
+    registry = scan_modules()
+    app.state.registry = registry
+    include_routes(app, registry)
     return app
 
 

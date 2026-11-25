@@ -64,7 +64,10 @@ setting to `app/platform/config.py` and `.env.example` together.
   `api.py` (with a `router`), `schemas.py`, `service.py`, rule files,
   `repository.py`, `models.py`, `jobs.py`, `events.py`.
 - Modules are found by scanning `app/`: a new module changes no shared
-  file. Its `router` is served under `/v1`.
+  file. Its `router` is served under `/v1`. Its jobs, event handlers,
+  due-work queries, and error codes go through a `register(registry)`
+  function in its `__init__.py` (`app/platform/modules.py`); the API,
+  the worker, and the scheduler run the same scan.
 - A module imports another module's `service.py` only; `lint-imports`
   enforces this and forbids cycles between modules.
 - Errors are raised as `AppError` (`app/platform/errors.py`) and
