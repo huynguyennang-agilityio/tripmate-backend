@@ -15,7 +15,7 @@ a session of their own. A session used after the request ended raises
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request
 from sqlalchemy import MetaData, event, text
@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Session, SessionTransaction
+from sqlalchemy.orm import DeclarativeBase, ORMExecuteState, Session, SessionTransaction
 
 # Seconds to wait for PostgreSQL when connecting.
 CONNECT_TIMEOUT_SECONDS = 2.0
@@ -64,7 +64,9 @@ async def ping_database(engine: AsyncEngine) -> None:
 def install_sessions(app: FastAPI, engine: AsyncEngine) -> None:
     """Make `get_session` hand out sessions on `engine` (called at the app's start-up)."""
     # Objects stay readable after the commit, which happens once the handler returned.
-    app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    app.state.session_factory = async_sessionmaker(
+        engine, expire_on_commit=False, sync_session_class=_RequestSession
+    )
 
 
 class SessionCommitError(RuntimeError):
@@ -81,8 +83,20 @@ _STRAY_COMMIT = "tripmate.stray_commit"
 _REQUEST_ENDED = "tripmate.request_ended"
 
 
+def _closed_error() -> SessionClosedError:
+    return SessionClosedError(
+        "The request's session is closed. Work after the response goes through "
+        "the outbox, never the request's session"
+    )
+
+
 def _guard(session: AsyncSession) -> None:
-    """Make the session refuse a commit by a handler and any use after the request."""
+    """Make the session refuse a commit by a handler and any use after the request.
+
+    After the request every use raises, not only the first: a statement (`execute`,
+    `get`, ...) is refused before it reaches the database, `begin` and `connection`
+    are refused too, and no connection is ever checked out again.
+    """
     sync_session = session.sync_session
 
     def before_commit(committing: Session) -> None:
@@ -94,15 +108,36 @@ def _guard(session: AsyncSession) -> None:
                 "A handler never commits: the platform commits when the handler returns"
             )
 
-    def after_transaction_create(committing: Session, _: SessionTransaction) -> None:
-        if committing.info.get(_REQUEST_ENDED):
-            raise SessionClosedError(
-                "The request's session is closed. Work after the response goes through "
-                "the outbox, never the request's session"
-            )
+    def do_orm_execute(state: ORMExecuteState) -> None:
+        if state.session.info.get(_REQUEST_ENDED):
+            raise _closed_error()
 
     event.listen(sync_session, "before_commit", before_commit)
-    event.listen(sync_session, "after_transaction_create", after_transaction_create)
+    event.listen(sync_session, "do_orm_execute", do_orm_execute)
+
+
+class _RequestSession(Session):
+    """The sync session behind the request's `AsyncSession`.
+
+    Once the request ended it takes no transaction and gives no connection, so a
+    background task that catches `SessionClosedError` and tries again fails again.
+    """
+
+    def _check_open(self) -> None:
+        if self.info.get(_REQUEST_ENDED):
+            raise _closed_error()
+
+    def get_bind(self, *args: Any, **kwargs: Any) -> Any:
+        self._check_open()
+        return super().get_bind(*args, **kwargs)
+
+    def begin(self, nested: bool = False) -> SessionTransaction:
+        self._check_open()
+        return super().begin(nested=nested)
+
+    def begin_nested(self) -> SessionTransaction:
+        self._check_open()
+        return super().begin_nested()
 
 
 async def _session_in_transaction(request: Request) -> AsyncIterator[AsyncSession]:
