@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.0
+**Version:** 1.1
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -188,7 +188,7 @@ Shown once on a throwaway pull request for each case.
 
 **Manual checks**
 
-- [ ] F14-12: The three role files in `.claude/agents/` → Each names what it reads, what it may change, and what it never does, as in development-flow.md, section 2.3
+- [ ] F14-12: The four role files in `.claude/agents/` → Each names what it reads, what it may change, and what it never does, as in development-flow.md, section 2.3
 - [ ] Checkpoint: On throwaway pull requests: a test that passes before its code, a locked test weakened by a later commit, and a migration with no label each fail CI. From here a Low card merges on its own.
 
 ## F3
@@ -741,3 +741,4 @@ None.
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-11-25 | First version: the 14 tasks of EPIC-11 in this repository, moved from the EPIC-11 spec, sections 6 and 7, with scope, what each leaves out, the reason for its risk level, and its manual checks. The skeleton tasks write four agent roles, as development-flow.md now says. |
+| 1.1 | 2026-11-25 | F14 manual checks: F14-12 names the four role files, as its test case does. |
