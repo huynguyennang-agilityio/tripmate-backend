@@ -75,8 +75,11 @@ setting to `app/platform/config.py` and `.env.example` together.
 
 ## How a card is built
 
-Each card runs with three agents in `.claude/agents/`: `test-agent`,
-`code-agent`, and `review-agent` (development-flow.md, section 2.3).
+Each card runs with four agents in `.claude/agents/`: `test-agent`,
+`code-agent`, `test-check-agent`, and `diff-review-agent`
+(development-flow.md, section 2.3). The tasks and their test cases are
+in `tasks/<epic>.md`; the notes of review round 2 go in
+`tasks/<epic>-notes/<card>.md`.
 
 - Branch `<type>/<ID>-<short-name>`; every commit message and pull
   request title starts with the ID (development-flow.md, section 2.5).
