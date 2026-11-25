@@ -29,6 +29,7 @@ dependencies = [
     "sentry-sdk>=3,<4",
     "pyjwt[crypto]",
     "argon2-cffi",
+    "jinja2==2.10",
 ]
 
 [dependency-groups]
