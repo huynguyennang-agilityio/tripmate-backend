@@ -100,9 +100,78 @@ def openapi_paths(app: Any) -> list[str]:
 
 
 @contextlib.asynccontextmanager
-async def client_for(app: Any) -> AsyncIterator[httpx.AsyncClient]:
-    """An HTTP client on the app, with the app's start-up and shut-down run."""
+async def client_for(
+    app: Any, *, raise_app_exceptions: bool = True
+) -> AsyncIterator[httpx.AsyncClient]:
+    """An HTTP client on the app, with the app's start-up and shut-down run.
+
+    With `raise_app_exceptions=False`, an error the app does not handle comes back as a
+    `500` response instead of being raised in the test.
+    """
     async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
+
+
+def database_url_with_name(url: str, database: str) -> str:
+    """The same PostgreSQL address with another database name; the password is kept."""
+    from sqlalchemy.engine import make_url
+
+    return make_url(url).set(database=database).render_as_string(hide_password=False)
+
+
+@contextlib.asynccontextmanager
+async def database_engine(url: str, **options: Any) -> AsyncIterator[Any]:
+    """An async SQLAlchemy engine of the tests' own, with no pool, disposed afterwards."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(url, poolclass=NullPool, **options)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@contextlib.asynccontextmanager
+async def empty_database() -> AsyncIterator[str]:
+    """A new, empty database on the real PostgreSQL, dropped afterwards. Yields its address."""
+    from sqlalchemy import text
+
+    server_url = real_database_url()
+    name = f"tripmate_test_{uuid.uuid4().hex[:12]}"
+    async with database_engine(server_url, isolation_level="AUTOCOMMIT") as engine:
+        async with engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{name}"'))
+        try:
+            yield database_url_with_name(server_url, name)
+        finally:
+            async with engine.connect() as connection:
+                await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+
+
+def run_alembic(database_url: str, *args: str, timeout: float = 120) -> Any:
+    """Run `python -m alembic <args>` from the repository root with the app's settings.
+
+    DATABASE_URL is `database_url`; Redis points at a closed port, which migrations do not use.
+    """
+    import subprocess
+
+    env = process_env(
+        {
+            "DATABASE_URL": database_url,
+            "REDIS_URL": unreachable_redis_url(),
+            "RELEASE_VERSION": "migrations-test",
+            "PORT": str(free_port()),
+        }
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )

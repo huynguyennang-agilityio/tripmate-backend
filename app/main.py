@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from app.platform import health
 from app.platform.config import Settings, load_settings, load_settings_or_exit
-from app.platform.db import create_engine
+from app.platform.db import create_engine, install_sessions
 from app.platform.errors import install_error_handlers
 from app.platform.modules import include_routes, scan_modules
 from app.platform.redis_client import create_redis
@@ -30,6 +30,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine = create_engine(settings.database_url.get_secret_value())
         redis = create_redis(settings.redis_url.get_secret_value())
         app.state.resources = health.Resources(settings.release_version, engine, redis)
+        install_sessions(app, engine)
         try:
             yield
         finally:

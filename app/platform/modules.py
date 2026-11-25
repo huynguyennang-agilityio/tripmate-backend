@@ -9,6 +9,10 @@ which collects what every module registers into one `Registry`:
   `__init__.py` defines one: jobs, event handlers, due-work queries, and
   error codes.
 
+Migrations run a scan of their own, `import_models()`, which loads every
+module's `models.py`, and `app/platform/models.py` when it exists (the tables
+of the platform itself, from cards F7 and F8), into `Base.metadata`.
+
 Adding a module therefore changes no shared file, and `platform` never
 imports a module by name. Only the registration lives here: running the
 jobs, handlers, and due-work queries comes with card F9, and checking the
@@ -88,6 +92,25 @@ def scan_modules() -> Registry:
                 raise TypeError(f"app/{name}/__init__.py: `register` must be a function")
             register(registry)
     return registry
+
+
+def import_models() -> list[str]:
+    """Import every module's `models.py`, so its tables are in `Base.metadata`.
+
+    Migrations call this to compare the models with the database. Also imports
+    `app/platform/models.py` when it exists: `platform` is not a module, but its
+    tables (idempotency keys, outbox events) belong to the same metadata.
+    Returns the names whose models were imported, `platform` included.
+    """
+    imported = []
+    if (APP_DIR / "platform" / "models.py").is_file():
+        importlib.import_module("app.platform.models")
+        imported.append("platform")
+    for name in module_names():
+        if (APP_DIR / name / "models.py").is_file():
+            importlib.import_module(f"app.{name}.models")
+            imported.append(name)
+    return imported
 
 
 def include_routes(app: FastAPI, registry: Registry) -> None:
