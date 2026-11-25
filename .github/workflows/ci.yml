@@ -13,11 +13,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 env:
-  UV_FROZEN: "1"
+  # Every `uv sync` and `uv run` fails when uv.lock is stale against pyproject.toml.
+  UV_LOCKED: "1"
 
 jobs:
   lint:
@@ -103,7 +104,8 @@ jobs:
           version: "0.13.7"
       - run: uv sync
       - name: Integration and API tests
-        run: uv run pytest tests/integration tests/api -q
+        # Everything outside tests/unit, so a new test directory runs in CI.
+        run: uv run pytest tests --ignore=tests/unit -q
 
   imports:
     name: imports
@@ -176,7 +178,7 @@ jobs:
       - name: Audit the locked dependencies
         # The runtime and dev dependencies of uv.lock, pinned to the locked versions.
         run: |
-          uv export --frozen --no-hashes --no-emit-project --all-groups > "$RUNNER_TEMP/requirements.txt"
+          uv export --locked --no-hashes --no-emit-project --all-groups > "$RUNNER_TEMP/requirements.txt"
           uv run pip-audit --no-deps --disable-pip -r "$RUNNER_TEMP/requirements.txt"
 
   secrets:
@@ -213,6 +215,10 @@ jobs:
             range="${BEFORE_SHA}..${PUSH_SHA}"
           fi
           "$RUNNER_TEMP/gitleaks" git --log-opts="$range" --redact --verbose --exit-code 1 .
+      - name: Scan the checked-out files
+        # Files as they are now, not only the commits of the change. The default
+        # config skips `.git`; the archive and binary live in $RUNNER_TEMP, outside `.`.
+        run: '"$RUNNER_TEMP/gitleaks" dir . --redact --verbose --exit-code 1'
 
   image:
     name: image

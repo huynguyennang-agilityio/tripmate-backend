@@ -63,11 +63,11 @@ every push to `main`. Each job is a check that is required on `main`
 | `lint` | `ruff check .` and `ruff format --check .` |
 | `types` | `mypy app` |
 | `unit` | `pytest tests/unit` (unit and property tests) |
-| `integration` | `pytest tests/integration tests/api` against PostgreSQL 16 and Redis 7 service containers |
+| `integration` | `pytest tests --ignore=tests/unit` (everything but the unit tests) against PostgreSQL 16 and Redis 7 service containers |
 | `imports` | `lint-imports` |
 | `migrations` | exactly one Alembic head, `alembic upgrade head`, `alembic check` |
 | `audit` | `pip-audit` on the locked dependencies |
-| `secrets` | gitleaks over the commits of the change |
+| `secrets` | gitleaks over the commits of the change and the checked-out files |
 | `image` | `docker build` of the `Dockerfile`, no push |
 
 Checks of later cards join this file in their own cards. Third-party
