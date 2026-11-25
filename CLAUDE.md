@@ -52,6 +52,27 @@ The tests are not safe to run in parallel. A test that needs PostgreSQL
 or Redis fails, never skips, when `TEST_DATABASE_URL` or
 `TEST_REDIS_URL` is missing.
 
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request to `main` and on
+every push to `main`. Each job is a check that is required on `main`
+(EPIC-11 spec, section 2.9); the check's name is the job's name:
+
+| Job | Runs |
+|-----|------|
+| `lint` | `ruff check .` and `ruff format --check .` |
+| `types` | `mypy app` |
+| `unit` | `pytest tests/unit` (unit and property tests) |
+| `integration` | `pytest tests/integration tests/api` against PostgreSQL 16 and Redis 7 service containers |
+| `imports` | `lint-imports` |
+| `migrations` | exactly one Alembic head, `alembic upgrade head`, `alembic check` |
+| `audit` | `pip-audit` on the locked dependencies |
+| `secrets` | gitleaks over the commits of the change |
+| `image` | `docker build` of the `Dockerfile`, no push |
+
+Checks of later cards join this file in their own cards. Third-party
+actions are pinned to a full commit SHA with the version in a comment.
+
 ## Settings
 
 Environment variables only, read once at start-up and checked; the app
