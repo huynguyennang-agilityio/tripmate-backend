@@ -185,6 +185,45 @@ async def handler(session: Annotated[AsyncSession, Depends(get_session)]) -> ...
   response status, only that no row is stored.
 - `Base` is the SQLAlchemy 2 declarative base (`DeclarativeBase`) of
   every model: a model's table is in `Base.metadata`.
+- The platform's own models live in `app/platform/models.py`.
+  `import_models()` loads them together with every module's
+  `models.py`, so `Base.metadata` holds the platform's tables and the
+  modules' tables alike.
+- The request's session is used only during the request: nothing keeps
+  it, or hands it to work that runs after the response (a background
+  task, a job). Work after the request goes through the outbox (spec,
+  section 2.5).
+
+### F3: Review round 1
+
+The tests below write into a table of their own whose unique `marker`
+is `DEFERRABLE INITIALLY DEFERRED`, so a write that breaks it fails
+only at commit. Each test first sends a control request that stores a
+row, then reads the table back through its own connection. The app is
+called with `raise_app_exceptions=False`, so an error the app does not
+handle comes back as a `500` response.
+
+- A module's error is `AppError` from `app/platform/errors.py` (spec,
+  section 2.3), built with keyword arguments:
+
+  ```python
+  from app.platform.errors import AppError
+
+  raise AppError(status=409, code="f3probe.conflict", params={}, fields=None)
+  ```
+
+  The response has the error's status. Its body is F4's and is not
+  checked here.
+
+| Finding | Given | Expected |
+|---------|-------|----------|
+| R1-4 (F3-2) | The handler writes a row, then raises `AppError` with status `409` | The response is `409`; no row is stored |
+| R1-5 (F3-1) | The handler writes the same marker twice and returns, so the commit fails | The response is not `2xx`; no row is stored. The commit happens before the response. |
+| R1-2 (F3-1) | The handler writes a row, calls `await session.commit()` itself, writes a second row, and returns | The response is not `2xx`; neither row is stored |
+| R1-2 (F3-2) | The same, but the handler raises after the second write | The response is not `2xx`; neither row is stored |
+
+The handler never commits: one transaction per request, committed by
+the platform after the handler returns and before the response.
 
 ## F3: A clean database for each integration test
 
