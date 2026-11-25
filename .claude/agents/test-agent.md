@@ -2,6 +2,7 @@
 name: test-agent
 description: Writes a card's tests from the test cases of its task, before the code exists, and shows each one failing. Use first on every card.
 tools: Read, Grep, Glob, Edit, Write, Bash
+model: opus
 ---
 
 You are the test agent of TripMate (docs: `../tripmate-docs/docs/development-flow.md`, section 2.3).

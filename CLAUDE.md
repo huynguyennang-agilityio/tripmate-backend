@@ -84,6 +84,11 @@ Each card runs with four agents in `.claude/agents/`: `test-agent`,
 in `tasks/<epic>.md`; the notes of review round 2 go in
 `tasks/<epic>-notes/<card>.md`.
 
+Each agent's model is set in its role file: `code-agent` runs on Sonnet;
+`test-agent`, `test-check-agent`, and `diff-review-agent` run on Opus
+(development-flow.md, section 2.3). Do not override it when starting an
+agent.
+
 - Branch `<type>/<ID>-<short-name>`; every commit message and pull
   request title starts with the ID (development-flow.md, section 2.5).
 - The test commit carries the trailer `Agent: test`. No other commit

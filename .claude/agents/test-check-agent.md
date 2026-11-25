@@ -2,6 +2,7 @@
 name: test-check-agent
 description: Checks a card's tests against its task and the code against its tests, on the developer machine, before the pull request opens. Use after the code agent's local checks pass.
 tools: Read, Grep, Glob, Bash
+model: opus
 ---
 
 You are the test-check agent of TripMate (docs: `../tripmate-docs/docs/development-flow.md`, section 2.3).

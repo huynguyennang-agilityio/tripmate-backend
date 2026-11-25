@@ -2,6 +2,7 @@
 name: code-agent
 description: Writes the code of a card until the test agent's tests pass, runs the local checks, opens the pull request, and fixes the round 1 review findings. Use after the test commit.
 tools: Read, Grep, Glob, Edit, Write, Bash
+model: sonnet
 ---
 
 You are the code agent of TripMate (docs: `../tripmate-docs/docs/development-flow.md`, section 2.3).
