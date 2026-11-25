@@ -53,6 +53,9 @@ read), read once at start-up and checked.
 | `RELEASE_VERSION` | Yes | string | The release version the health check returns |
 | `PORT` | No | integer | The port the API process listens on |
 
+- F1-4 and F1-5 hold for each of the three processes (API, worker, and
+  scheduler); the `PORT` case of F1-5 is for the API only, the one process
+  that listens on `PORT`.
 - A missing required setting (F1-4): the process exits with a non-zero
   code before it reaches PostgreSQL or Redis, within 30 seconds, and its
   output (stdout or stderr) contains the setting's name. The output

@@ -1,8 +1,12 @@
 """F1 Backend skeleton and health check: cases F1-4 and F1-5 (epic-11 spec, sections 2.7 and 7.1).
 
-The API process is started with a broken environment. No PostgreSQL or Redis
-is needed: both addresses point at closed local ports, and the process must
-stop before it tries to reach them.
+Each process of tests/INTERFACE.md, section "Processes" (API, worker, and
+scheduler), is started with a broken environment. No PostgreSQL or Redis is
+needed: both addresses point at closed local ports, and the process must stop
+before it tries to reach them.
+
+`PORT` is the port the API listens on, so its wrong-type case runs for the API
+only; every other case runs for all three processes.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from tests.support import (
 )
 
 STOP_TIMEOUT_SECONDS = 30
+PROCESSES = tuple(PROCESS_MODULES)
 
 
 def _valid_settings(password: str) -> dict[str, str]:
@@ -36,14 +41,14 @@ def _valid_settings(password: str) -> dict[str, str]:
     }
 
 
-def _start_api(settings: dict[str, str]) -> tuple[int, str]:
-    """Start the API process; return its exit code and everything it printed.
+def _start(process: str, settings: dict[str, str]) -> tuple[int, str]:
+    """Start one process; return its exit code and everything it printed.
 
     Fails when the process is still running after the timeout.
     """
     try:
         done = subprocess.run(
-            [sys.executable, "-m", PROCESS_MODULES["api"]],
+            [sys.executable, "-m", PROCESS_MODULES[process]],
             cwd=REPO_ROOT,
             env=process_env(settings),
             capture_output=True,
@@ -52,20 +57,23 @@ def _start_api(settings: dict[str, str]) -> tuple[int, str]:
         )
     except subprocess.TimeoutExpired as still_running:
         raise AssertionError(
-            f"the process did not stop within {STOP_TIMEOUT_SECONDS}s"
+            f"the {process} process did not stop within {STOP_TIMEOUT_SECONDS}s"
         ) from still_running
     return done.returncode, done.stdout + done.stderr
 
 
+@pytest.mark.parametrize("process", PROCESSES)
 @pytest.mark.parametrize("missing", REQUIRED_SETTINGS)
-def test_F1_4_missing_required_setting_stops_the_process_and_names_it(missing: str) -> None:
+def test_F1_4_missing_required_setting_stops_the_process_and_names_it(
+    process: str, missing: str
+) -> None:
     password = made_up_password()
     settings = _valid_settings(password)
     del settings[missing]
 
-    exit_code, output = _start_api(settings)
+    exit_code, output = _start(process, settings)
 
-    assert exit_code != 0, f"started without {missing}"
+    assert exit_code != 0, f"the {process} process started without {missing}"
     assert missing in output, f"{missing} is not named in: {output}"
     for name, value in settings.items():
         assert value not in output, f"the value of {name} is printed: {output}"
@@ -100,20 +108,31 @@ def _wrong_type_cases() -> list[tuple[str, str, list[str]]]:
     ]
 
 
+def _wrong_type_cases_per_process() -> list[pytest.ParameterSet]:
+    """Each wrong-type case for each process; `PORT` only for the API, the one process
+    that listens on it."""
+    ids = ["PORT", "DATABASE_URL-no-at", "DATABASE_URL-port", "REDIS_URL-port"]
+    return [
+        pytest.param(process, setting, value, secret_parts, id=f"{process}-{case_id}")
+        for process in PROCESSES
+        for case_id, (setting, value, secret_parts) in zip(ids, _wrong_type_cases(), strict=True)
+        if setting != "PORT" or process == "api"
+    ]
+
+
 @pytest.mark.parametrize(
-    ("setting", "value", "secret_parts"),
-    _wrong_type_cases(),
-    ids=["PORT", "DATABASE_URL-no-at", "DATABASE_URL-port", "REDIS_URL-port"],
+    ("process", "setting", "value", "secret_parts"),
+    _wrong_type_cases_per_process(),
 )
 def test_F1_5_setting_of_the_wrong_type_stops_the_process_and_names_it(
-    setting: str, value: str, secret_parts: list[str]
+    process: str, setting: str, value: str, secret_parts: list[str]
 ) -> None:
     settings = _valid_settings(made_up_password())
     settings[setting] = value
 
-    exit_code, output = _start_api(settings)
+    exit_code, output = _start(process, settings)
 
-    assert exit_code != 0, f"started with a wrong {setting}"
+    assert exit_code != 0, f"the {process} process started with a wrong {setting}"
     assert setting in output, f"{setting} is not named in: {output}"
     assert value not in output, f"the value of {setting} is printed: {output}"
     for part in secret_parts:
