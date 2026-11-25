@@ -1,0 +1,23 @@
+# Settings with values never enter the repository (it is public).
+.env
+.env.*
+!.env.example
+
+# Python and tools
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.hypothesis/
+mutants/
+.coverage
+htmlcov/
+
+# Local editor and Claude Code settings
+.claude/settings.local.json
+.DS_Store
+.idea/
+.vscode/

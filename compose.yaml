@@ -1,0 +1,37 @@
+# Local PostgreSQL and Redis for development and the tests (EPIC-11 spec,
+# section 2.1): `docker compose up -d`. Card F11 adds the API, the worker,
+# and the scheduler from the backend image, with seed data.
+# Local only: PostgreSQL accepts connections without a password, so no
+# secret is needed here, and every port is bound to 127.0.0.1.
+# POSTGRES_HOST_PORT moves PostgreSQL's host port when 5432 is taken.
+name: tripmate
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tripmate
+      POSTGRES_DB: tripmate
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "tripmate", "-d", "tripmate"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+volumes:
+  postgres-data:

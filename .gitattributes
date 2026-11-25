@@ -1,0 +1,6 @@
+# The work runs on macOS and Windows: every text file is stored and checked out with LF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
