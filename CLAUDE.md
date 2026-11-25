@@ -32,12 +32,16 @@ several machines".
   with another host port, for example
   `POSTGRES_HOST_PORT=5433 docker compose up -d`, and use that port in
   `TEST_DATABASE_URL`.
+- The tests empty every table of the database `TEST_DATABASE_URL` names, so
+  its name must end in `_test` or they fail at once. Compose creates
+  `tripmate_test` when its volume is first made; on an older volume or your
+  own PostgreSQL, run `createdb -h 127.0.0.1 -U tripmate tripmate_test`.
 
 ## Commands
 
 | What | Command |
 |------|---------|
-| Tests | `TEST_DATABASE_URL=postgresql+asyncpg://tripmate@127.0.0.1:5432/tripmate TEST_REDIS_URL=redis://127.0.0.1:6379/0 uv run pytest tests -q` |
+| Tests | `TEST_DATABASE_URL=postgresql+asyncpg://tripmate@127.0.0.1:5432/tripmate_test TEST_REDIS_URL=redis://127.0.0.1:6379/0 uv run pytest tests -q` |
 | Lint and format | `uv run ruff check .` and `uv run ruff format --check .` |
 | Types | `uv run mypy app` |
 | Module boundaries | `uv run lint-imports` |

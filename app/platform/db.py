@@ -4,6 +4,12 @@ A handler asks for a session with `Depends(get_session)` and never commits: the
 platform commits when the handler returns and rolls back when it raises, so the
 change, its Audit log entries, and its outbox events are stored together or not
 at all.
+
+The session lives for the request only. Work that outlives the response (a
+`BackgroundTasks` function, a task started with `asyncio.create_task`) never
+uses it: it goes through the outbox (spec 2.5), whose events the worker runs in
+a session of their own. A session used after the request ended raises
+`SessionClosedError` instead of opening a transaction nobody ends.
 """
 
 from __future__ import annotations
@@ -12,14 +18,14 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
-from sqlalchemy import MetaData, text
+from sqlalchemy import MetaData, event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, SessionTransaction
 
 # Seconds to wait for PostgreSQL when connecting.
 CONNECT_TIMEOUT_SECONDS = 2.0
@@ -61,12 +67,62 @@ def install_sessions(app: FastAPI, engine: AsyncEngine) -> None:
     app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
+class SessionCommitError(RuntimeError):
+    """A handler committed the session itself; only the platform commits."""
+
+
+class SessionClosedError(RuntimeError):
+    """The request's session was used after the request ended."""
+
+
+# Keys of `Session.info` that the guards below read and write.
+_PLATFORM_COMMIT = "tripmate.platform_commit"
+_STRAY_COMMIT = "tripmate.stray_commit"
+_REQUEST_ENDED = "tripmate.request_ended"
+
+
+def _guard(session: AsyncSession) -> None:
+    """Make the session refuse a commit by a handler and any use after the request."""
+    sync_session = session.sync_session
+
+    def before_commit(committing: Session) -> None:
+        if not committing.info.get(_PLATFORM_COMMIT):
+            # Raised before anything is written. The mark makes the platform roll the
+            # whole request back even when the handler catches this error.
+            committing.info[_STRAY_COMMIT] = True
+            raise SessionCommitError(
+                "A handler never commits: the platform commits when the handler returns"
+            )
+
+    def after_transaction_create(committing: Session, _: SessionTransaction) -> None:
+        if committing.info.get(_REQUEST_ENDED):
+            raise SessionClosedError(
+                "The request's session is closed. Work after the response goes through "
+                "the outbox, never the request's session"
+            )
+
+    event.listen(sync_session, "before_commit", before_commit)
+    event.listen(sync_session, "after_transaction_create", after_transaction_create)
+
+
 async def _session_in_transaction(request: Request) -> AsyncIterator[AsyncSession]:
     factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
-    # `begin()` commits when the block ends normally and rolls back when the
-    # handler's exception is thrown in here.
-    async with factory() as session, session.begin():
-        yield session
+    async with factory() as session:
+        _guard(session)
+        await session.begin()
+        try:
+            yield session
+            if session.info.get(_STRAY_COMMIT):
+                raise SessionCommitError("A handler committed the session; nothing was stored")
+            # The handler's exception is thrown into the `yield`, so a raise rolls back.
+            session.info[_PLATFORM_COMMIT] = True
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+            session.info[_REQUEST_ENDED] = True
 
 
 async def get_session(

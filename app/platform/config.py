@@ -46,6 +46,47 @@ class SettingsError(Exception):
         super().__init__("Settings are not valid: " + "; ".join(problems))
 
 
+def _checked_database_url(secret: SecretStr) -> SecretStr:
+    # Every message here is fixed text: a parser's own message can quote the value.
+    try:
+        url = make_url(secret.get_secret_value())
+    except (ArgumentError, ValueError):
+        raise ValueError("not a valid database address") from None
+    # Render gives `postgresql://`; the app always talks to it through asyncpg.
+    if url.drivername == "postgresql":
+        url = url.set(drivername="postgresql+asyncpg")
+    if url.drivername != "postgresql+asyncpg":
+        raise ValueError("must be a postgresql+asyncpg:// address")
+    # asyncpg takes no libpq parameter: libpq's `sslmode` becomes asyncpg's `ssl`,
+    # and any other parameter would fail only at the first connection.
+    query = dict(url.query)
+    if "sslmode" in query:
+        if "ssl" in query:
+            raise ValueError("takes ssl or sslmode, not both")
+        query["ssl"] = query.pop("sslmode")
+    if set(query) - {"ssl"}:
+        raise ValueError("takes no query parameter other than ssl or sslmode")
+    if "ssl" in query and query["ssl"] not in SSL_MODES:
+        raise ValueError("ssl or sslmode must be one of " + ", ".join(sorted(SSL_MODES)))
+    url = url.set(query=query)
+    return SecretStr(url.render_as_string(hide_password=False))
+
+
+def _checked_redis_url(secret: SecretStr) -> SecretStr:
+    value = secret.get_secret_value()
+    if not value.startswith(("redis://", "rediss://")):
+        raise ValueError("must be a redis:// or rediss:// address")
+    try:
+        ConnectionPool.from_url(value)  # parses only; nothing connects
+    except ValueError:
+        raise ValueError("not a valid Redis address") from None
+    # redis-py ignores a database number it cannot read, so check it here.
+    database = urlsplit(value).path.removeprefix("/")
+    if database and not (database.isascii() and database.isdigit()):
+        raise ValueError("the database after the last / must be a whole number")
+    return secret
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -59,45 +100,25 @@ class Settings(BaseModel):
     @field_validator("database_url")
     @classmethod
     def _postgresql_with_asyncpg(cls, secret: SecretStr) -> SecretStr:
-        # Every message here is fixed text: a parser's own message can quote the value.
-        try:
-            url = make_url(secret.get_secret_value())
-        except (ArgumentError, ValueError):
-            raise ValueError("not a valid database address") from None
-        # Render gives `postgresql://`; the app always talks to it through asyncpg.
-        if url.drivername == "postgresql":
-            url = url.set(drivername="postgresql+asyncpg")
-        if url.drivername != "postgresql+asyncpg":
-            raise ValueError("must be a postgresql+asyncpg:// address")
-        # asyncpg takes no libpq parameter: libpq's `sslmode` becomes asyncpg's `ssl`,
-        # and any other parameter would fail only at the first connection.
-        query = dict(url.query)
-        if "sslmode" in query:
-            if "ssl" in query:
-                raise ValueError("takes ssl or sslmode, not both")
-            query["ssl"] = query.pop("sslmode")
-        if set(query) - {"ssl"}:
-            raise ValueError("takes no query parameter other than ssl or sslmode")
-        if "ssl" in query and query["ssl"] not in SSL_MODES:
-            raise ValueError("ssl or sslmode must be one of " + ", ".join(sorted(SSL_MODES)))
-        url = url.set(query=query)
-        return SecretStr(url.render_as_string(hide_password=False))
+        return _checked_database_url(secret)
 
     @field_validator("redis_url")
     @classmethod
     def _redis(cls, secret: SecretStr) -> SecretStr:
-        value = secret.get_secret_value()
-        if not value.startswith(("redis://", "rediss://")):
-            raise ValueError("must be a redis:// or rediss:// address")
-        try:
-            ConnectionPool.from_url(value)  # parses only; nothing connects
-        except ValueError:
-            raise ValueError("not a valid Redis address") from None
-        # redis-py ignores a database number it cannot read, so check it here.
-        database = urlsplit(value).path.removeprefix("/")
-        if database and not (database.isascii() and database.isdigit()):
-            raise ValueError("the database after the last / must be a whole number")
-        return secret
+        return _checked_redis_url(secret)
+
+
+class DatabaseSettings(BaseModel):
+    """Only the database address, for what needs no other setting (Alembic)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    database_url: Annotated[SecretStr, Field(min_length=1)]
+
+    @field_validator("database_url")
+    @classmethod
+    def _postgresql_with_asyncpg(cls, secret: SecretStr) -> SecretStr:
+        return _checked_database_url(secret)
 
 
 def _problem(error: Any) -> str:
@@ -125,4 +146,21 @@ def load_settings_or_exit() -> Settings:
         return load_settings()
     except SettingsError as error:
         print(str(error), file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+def load_database_url_or_exit() -> str:
+    """For a process that needs only the database (Alembic): its checked address, or exit 2.
+
+    Reads and checks `DATABASE_URL` as `load_settings` does, and no other setting.
+    The message names the setting and never its value.
+    """
+    value = os.environ.get("DATABASE_URL")
+    try:
+        return DatabaseSettings.model_validate(
+            {"database_url": value} if value else {}
+        ).database_url.get_secret_value()
+    except ValidationError as error:
+        problems = [_problem(e) for e in error.errors(include_input=False)]
+        print(str(SettingsError(problems)), file=sys.stderr)
         raise SystemExit(2) from None
