@@ -9,8 +9,17 @@ from __future__ import annotations
 import os
 import sys
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 from redis import ConnectionPool
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -24,6 +33,9 @@ SETTING_NAMES = {
 }
 
 DEFAULT_PORT = 8000
+
+# The SSL modes asyncpg takes in its `ssl` parameter, named as libpq's `sslmode`.
+SSL_MODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
 
 
 class SettingsError(Exception):
@@ -41,7 +53,7 @@ class Settings(BaseModel):
     # and logs. They are unwrapped only where the engine and the Redis client are made.
     database_url: Annotated[SecretStr, Field(min_length=1)]
     redis_url: Annotated[SecretStr, Field(min_length=1)]
-    release_version: Annotated[str, Field(min_length=1)]
+    release_version: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     port: Annotated[int, Field(ge=1, le=65535)] = DEFAULT_PORT
 
     @field_validator("database_url")
@@ -57,6 +69,18 @@ class Settings(BaseModel):
             url = url.set(drivername="postgresql+asyncpg")
         if url.drivername != "postgresql+asyncpg":
             raise ValueError("must be a postgresql+asyncpg:// address")
+        # asyncpg takes no libpq parameter: libpq's `sslmode` becomes asyncpg's `ssl`,
+        # and any other parameter would fail only at the first connection.
+        query = dict(url.query)
+        if "sslmode" in query:
+            if "ssl" in query:
+                raise ValueError("takes ssl or sslmode, not both")
+            query["ssl"] = query.pop("sslmode")
+        if set(query) - {"ssl"}:
+            raise ValueError("takes no query parameter other than ssl or sslmode")
+        if "ssl" in query and query["ssl"] not in SSL_MODES:
+            raise ValueError("ssl or sslmode must be one of " + ", ".join(sorted(SSL_MODES)))
+        url = url.set(query=query)
         return SecretStr(url.render_as_string(hide_password=False))
 
     @field_validator("redis_url")
@@ -69,6 +93,10 @@ class Settings(BaseModel):
             ConnectionPool.from_url(value)  # parses only; nothing connects
         except ValueError:
             raise ValueError("not a valid Redis address") from None
+        # redis-py ignores a database number it cannot read, so check it here.
+        database = urlsplit(value).path.removeprefix("/")
+        if database and not (database.isascii() and database.isdigit()):
+            raise ValueError("the database after the last / must be a whole number")
         return secret
 
 
