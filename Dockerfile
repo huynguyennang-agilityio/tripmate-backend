@@ -2,6 +2,7 @@
 # API:       python -m app.main   (the default command)
 # Worker:    python -m app.worker
 # Scheduler: python -m app.scheduler
+# Migrations: python -m alembic upgrade head
 FROM python:3.13-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /bin/uv
@@ -19,6 +20,8 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev
 
 COPY app ./app
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 RUN useradd --system --uid 10001 tripmate
 USER tripmate
