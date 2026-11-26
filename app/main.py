@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from app.platform import health
+from app.platform import health, whoami
 from app.platform.access import install_device_id
 from app.platform.config import Settings, load_settings, load_settings_or_exit
 from app.platform.db import create_engine, install_sessions
@@ -43,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_openapi(app)
     app.state.settings = settings
     app.include_router(health.router)
+    app.include_router(whoami.router)
     registry = scan_modules()
     app.state.registry = registry
     include_routes(app, registry)

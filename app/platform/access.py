@@ -109,14 +109,17 @@ async def public() -> None:
 def _public_keys(request: Request) -> list[Ed25519PublicKey]:
     keys = []
     for pem in request.app.state.settings.access_token_public_keys:
-        key = load_pem_public_key(pem.encode("ascii"))
+        key = load_pem_public_key(pem.encode())
         if isinstance(key, Ed25519PublicKey):  # always, the setting is checked at start-up
             keys.append(key)
     return keys
 
 
 def _bearer_token(request: Request) -> str:
-    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    header = request.headers.get("authorization")
+    if not header:
+        raise AppError(401, NOT_SIGNED_IN)
+    scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
         raise AppError(401, NOT_SIGNED_IN)
     return token.strip()
@@ -130,8 +133,8 @@ def _claims(token: str, keys: list[Ed25519PublicKey]) -> dict[str, Any]:
                 token,
                 key,
                 algorithms=[ALGORITHM],
+                # PyJWT's default leeway is 0, and the spec allows none.
                 options={"require": REQUIRED_CLAIMS},
-                leeway=0,
             )
         except jwt.ExpiredSignatureError:  # only after the signature checked
             raise AppError(401, TOKEN_EXPIRED) from None
