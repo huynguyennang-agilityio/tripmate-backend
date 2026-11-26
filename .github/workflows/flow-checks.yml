@@ -54,9 +54,9 @@ on:
         type: boolean
         default: false
       run-risk-gate:
-        description: Run the risk-gate job here. Turn it off when the repository calls risk-gate-check.yml from a pull_request_target workflow instead, which the pull request cannot change (the backend does).
+        description: Run the risk-gate job here, in a workflow the pull request can edit. Off by default; call risk-gate-check.yml from a pull_request_target workflow instead, which the pull request cannot change (the backend does).
         type: boolean
-        default: true
+        default: false
       flowchecks-ref:
         description: Tag or full commit SHA of flowchecks-repository to run the checks from
         type: string

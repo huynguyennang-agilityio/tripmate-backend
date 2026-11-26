@@ -96,9 +96,9 @@ always skipped here; never require it.
 
 | Check | Fails when |
 |-------|------------|
-| `failing-first` | A test the test commit (trailer `Agent: test`) added passes at that commit. Runs against PostgreSQL 16 and Redis 7. |
-| `test-lock` | A commit without the trailer changes, skips, or deletes a test of the test commit. A new test it adds is not locked. |
-| `mutation` | A changed rule file has a surviving mutant (mutmut) that the pull request description does not list |
+| `failing-first` | A test that a test commit (trailer `Agent: test`) adds passes at that commit. Each test commit is checked out and run in turn; a commit that only changes tests is not asked to fail. Only pytest exit 1 or 2 counts as failing first; any other exit is an error of the run and fails the check. Runs against PostgreSQL 16 and Redis 7. |
+| `test-lock` | A commit without the trailer changes, skips, or deletes a locked test (its function or method, with the module and class context it uses: imports, constants, helpers, `pytestmark`) or a locked support file; the head is compared with the last locked state too, so a merge cannot hide a change. A test commit that touches a path outside `tests/` fails too. A new test a code commit adds is not locked. |
+| `mutation` | A changed rule file has a surviving, untested, or unchecked mutant (mutmut), or gains a `# pragma: no mutate` or `no cover`, that the pull request description does not list |
 | `risk-gate` | A High path changed and the pull request has no `human-approved` label |
 
 - The path list is `.github/risk-paths.toml`: `[[rule]]` tables with a
@@ -108,22 +108,37 @@ always skipped here; never require it.
   whatever the file says. Its Medium rules name the rule files of
   architecture.md, section 4, the files mutation testing runs on.
 - `human-approved`: only the product owner adds this label to a pull
-  request, to approve a High change. Claude Code never adds it.
+  request, to approve a High change. Claude Code never adds it. A push to the
+  pull request removes it (the gate's job `revoke-approval`, on
+  `synchronize` only; `labeled`, `unlabeled`, and `edited` never do), and the
+  gate then judges that push as unapproved; the product owner adds the label
+  again after reading the new commits.
+- Which paths are High: the list of development-flow.md, section 2.1, as
+  `.github/risk-paths.toml` maps it, including each module's `schemas.py`,
+  `api.py`, and `events.py`, all of `app/platform/`, `app/main.py`,
+  `app/worker.py`, `app/scheduler.py`, and `tests/requirement-ids.txt`.
 - A surviving mutant is listed in the pull request description under
   `## Surviving mutants`, one line each: `- <mutant name>: <reason>` (the
   name as mutmut prints it, for example `app.money.splits.x_allocate__mutmut_3`).
+  A pragma added to a rule file is listed as `- <path>#pragma: <reason>`.
   Editing the description runs the check again.
-- Known limit: the lock covers test functions and the `test*` methods of
-  `Test*` classes (`path::TestX::test_y`), with the class's decorators,
-  bases, and attributes. Helper files, `conftest.py`, fixtures, and helper
-  methods stay unlocked.
+- The lock covers test functions and the `test*` methods of `Test*` classes
+  (`path::TestX::test_y`), and every other file under `tests/` that a test
+  commit added or changed (`conftest.py`, helpers, data). Known limits: helper
+  methods inside a class, and fixtures or helpers outside `tests/`, are not
+  locked; a file only a code commit added under `tests/` is not locked.
+- A fix to `flowchecks/` (or to the workflows) is judged by the code of the
+  base commit, so a change that repairs a broken check is judged by the broken
+  check. When that check blocks the fix, the product owner merges with an admin
+  merge after reading the diff.
 - Run one check by hand from the repository root, for example
   `uv run python -m flowchecks.risk_gate --rules .github/risk-paths.toml --repo . --base origin/main --head HEAD`.
 - Other repositories call `flow-checks.yml` with their own path list and test
   command, and pin `flowchecks-ref` to a tag or commit of this repository
-  (the header of the workflow explains why). They should run the risk gate as
-  the backend does: `run-risk-gate: false` on the `pull_request` call, and a
-  `pull_request_target` workflow that calls `risk-gate-check.yml`.
+  (the header of the workflow explains why). They run the risk gate as the
+  backend does: `run-risk-gate` is false by default, and a
+  `pull_request_target` workflow calls `risk-gate-check.yml` (its caller job
+  needs `pull-requests: write` for the label removal).
 
 ## Settings
 

@@ -87,3 +87,18 @@ def changed_files(repo: str | os.PathLike[str], old: str, new: str) -> list[str]
 def is_test_file(path: str) -> bool:
     name = PurePosixPath(path).name
     return name.startswith("test_") and name.endswith(".py")
+
+
+TEST_FOLDERS = ("tests", "test")
+
+
+def in_test_folder(path: str) -> bool:
+    return (
+        PurePosixPath(path).parts[:1] in [(f,) for f in TEST_FOLDERS]
+        and len(PurePosixPath(path).parts) > 1
+    )
+
+
+def is_support_file(path: str) -> bool:
+    """A file under `tests/` that is not a test file: `conftest.py`, helpers, data, interface."""
+    return in_test_folder(path) and not is_test_file(path)

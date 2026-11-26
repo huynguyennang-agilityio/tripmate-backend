@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from dataclasses import dataclass, field
 
 _SKIP_MARKS = frozenset({"skip", "skipif", "xfail"})
@@ -45,19 +46,35 @@ def parse(source: str | None) -> ModuleTests:
     except (SyntaxError, ValueError):
         return ModuleTests()
     functions: dict[str, str] = {}
+    context: list[ast.stmt] = []
     skipped = False
     for stmt in tree.body:
-        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-            if stmt.name.startswith("test"):
-                functions[stmt.name] = ast.dump(stmt, include_attributes=False)
+        is_test = isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef) and stmt.name.startswith(
+            "test"
+        )
+        is_test_class = isinstance(stmt, ast.ClassDef) and stmt.name.startswith("Test")
+        if not is_test and not is_test_class:
+            context.append(stmt)
+            skipped = skipped or _is_module_skip(stmt)
+    # What every test of the file depends on: imports, constants, helpers, `pytestmark`.
+    module_context = _digest(ast.Module(body=context, type_ignores=[]))
+    for stmt in tree.body:
+        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef) and stmt.name.startswith(
+            "test"
+        ):
+            functions[stmt.name] = f"{module_context}|{_digest(stmt)}"
         elif isinstance(stmt, ast.ClassDef):
-            _read_class(stmt, "", functions)
-        elif _is_module_skip(stmt):
-            skipped = True
+            _read_class(stmt, "", functions, module_context)
     return ModuleTests(functions=functions, skipped=skipped)
 
 
-def _read_class(node: ast.ClassDef, prefix: str, functions: dict[str, str]) -> None:
+def _digest(node: ast.AST) -> str:
+    return hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+
+
+def _read_class(
+    node: ast.ClassDef, prefix: str, functions: dict[str, str], module_context: str
+) -> None:
     """`test*` methods of a `Test*` class, named `TestX::test_y` as pytest's node ID.
 
     A method's fingerprint holds its own definition and the class's context (decorators, bases,
@@ -68,7 +85,7 @@ def _read_class(node: ast.ClassDef, prefix: str, functions: dict[str, str]) -> N
         return
     name = f"{prefix}{node.name}"
     methods = (ast.FunctionDef, ast.AsyncFunctionDef)
-    context = ast.dump(
+    context = _digest(
         ast.Module(
             body=[
                 *[s for s in node.body if not isinstance(s, (*methods, ast.ClassDef))],
@@ -79,7 +96,7 @@ def _read_class(node: ast.ClassDef, prefix: str, functions: dict[str, str]) -> N
     )
     for stmt in node.body:
         if isinstance(stmt, methods) and stmt.name.startswith("test"):
-            own = ast.dump(stmt, include_attributes=False)
-            functions[f"{name}::{stmt.name}"] = f"{context}|{own}"
+            own = _digest(stmt)
+            functions[f"{name}::{stmt.name}"] = f"{module_context}|{context}|{own}"
         elif isinstance(stmt, ast.ClassDef):
-            _read_class(stmt, f"{name}::", functions)
+            _read_class(stmt, f"{name}::", functions, module_context)

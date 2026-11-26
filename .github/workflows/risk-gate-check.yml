@@ -10,8 +10,17 @@
 # head commit's objects with `git fetch` (never `checkout`), and lists the changed paths with
 # `git diff`. The code that runs is the base checkout's workflow and the `flowchecks` package at
 # `flowchecks-ref` (the caller passes the base commit). The path list is read from the base
-# checkout too. There are no secrets, and `permissions: contents: read`. The pull request's fields
+# checkout too. There are no secrets, and `permissions: contents: read` (the one job that also has
+# `pull-requests: write` runs nothing from the pull request). The pull request's fields
 # reach the scripts only through `env:`.
+#
+# An approval ends with a push. On `synchronize`, when the pull request carries `human-approved`,
+# the job `revoke-approval` removes the label (the only job with `pull-requests: write`; it
+# checks out and runs nothing, and only calls the REST API with the token) and the gate then
+# judges the pull request as unapproved: a High path fails it, and the product owner adds the
+# label again after reading the new commits. The removal is made with `GITHUB_TOKEN`, which does
+# not start another run, so this run decides the result itself. `labeled`, `unlabeled`, and
+# `edited` never remove the label. The caller job needs `pull-requests: write` for this.
 #
 # The check is shown as `<caller job> / risk-gate`; for the backend, `gate / risk-gate`.
 name: Risk gate (reusable)
@@ -36,11 +45,41 @@ permissions:
   contents: read
 
 jobs:
+  revoke-approval:
+    name: revoke-approval
+    if: ${{ github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'human-approved') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Remove the label human-approved after a push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --method DELETE \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/human-approved" --silent
+          echo "A push removed human-approved; the product owner adds it again after reading the new commits."
+
   risk-gate:
     name: risk-gate
+    needs: revoke-approval
+    # Runs when the job above was skipped or succeeded; when the removal failed, the gate fails.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: The approval must have been removed when it had to be
+        env:
+          REVOKE_RESULT: ${{ needs.revoke-approval.result }}
+        run: |
+          if [ "$REVOKE_RESULT" = "failure" ]; then
+            echo "::error::Could not remove the label human-approved after a push."
+            exit 1
+          fi
       - name: Needs a pull request
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -51,11 +90,11 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The base commit, never the head. The token stays in the git config so that the
-          # fetch below works in a private repository; nothing from the head is executed.
+          # The base commit, never the head. The repository is public, so the fetch below needs
+          # no credentials; a private repository would need a read token here.
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.flowchecks-repository }}
@@ -85,13 +124,17 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RULES_FILE: ${{ inputs.rules-file }}
           LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # "success" when a push has just removed the approval: the payload still lists it.
+          REVOKE_RESULT: ${{ needs.revoke-approval.result }}
         run: |
           label_args=()
-          while IFS= read -r label; do
-            if [ -n "$label" ]; then
-              label_args+=(--label "$label")
-            fi
-          done < <(printf '%s' "$LABELS_JSON" | jq -r '.[]')
+          if [ "$REVOKE_RESULT" != "success" ]; then
+            while IFS= read -r label; do
+              if [ -n "$label" ]; then
+                label_args+=(--label "$label")
+              fi
+            done < <(printf '%s' "$LABELS_JSON" | jq -r '.[]')
+          fi
           cd .flowchecks-src
           uv run --no-project --python 3.13 python -m flowchecks.risk_gate \
             --rules "$RULES_FILE" --repo "$GITHUB_WORKSPACE" \

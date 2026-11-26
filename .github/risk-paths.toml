@@ -8,12 +8,43 @@
 
 # ---- High: the list of development-flow.md, section 2.1 ----
 
-# The API contract and event schemas: the contract itself lives in tripmate-contracts, and the
-# backend's schemas implement it, so only the shared error format is listed here.
+# The API contract and event schemas: each module's schemas (the contract is generated from
+# them), routes with their access declarations, and events; the shared platform (error format,
+# access, rate limits, idempotency, outbox, db, logging, module scan); and the processes.
 [[rule]]
-glob = "app/platform/errors.py"
+glob = "app/*/schemas.py"
 level = "High"
-reason = "API contract: the error format and codes every client reads"
+reason = "API contract: request and response schemas"
+
+[[rule]]
+glob = "app/*/api.py"
+level = "High"
+reason = "API contract: routes and their access declarations"
+
+[[rule]]
+glob = "app/*/events.py"
+level = "High"
+reason = "Event schemas"
+
+[[rule]]
+glob = "app/platform/**"
+level = "High"
+reason = "Shared by every module; when the level is not clear it is High"
+
+[[rule]]
+glob = "app/main.py"
+level = "High"
+reason = "The request pipeline"
+
+[[rule]]
+glob = "app/worker.py"
+level = "High"
+reason = "A process"
+
+[[rule]]
+glob = "app/scheduler.py"
+level = "High"
+reason = "A process"
 
 # A migration or a table.
 [[rule]]
@@ -189,9 +220,14 @@ level = "Low"
 reason = "Ordinary code of one module"
 
 [[rule]]
-glob = "app/*.py"
+glob = "app/__init__.py"
 level = "Low"
-reason = "The three processes"
+reason = "Package marker"
+
+[[rule]]
+glob = "tests/requirement-ids.txt"
+level = "High"
+reason = "The P0 requirement IDs in scope: removing one hides a missing test"
 
 [[rule]]
 glob = "tests/**"

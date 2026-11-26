@@ -3,7 +3,8 @@
 # branch's, which a pull request cannot edit; risk-gate-check.yml explains why that is safe (the
 # head is only fetched and diffed, never checked out or run).
 # `labeled` and `unlabeled` run it again when `human-approved` is added or removed (only the
-# product owner adds it); `edited` and `synchronize` when the pull request changes.
+# product owner adds it); `edited` and `synchronize` when the pull request changes. A push
+# (`synchronize`) removes the label `human-approved` first (see risk-gate-check.yml).
 name: Risk gate
 
 on:
@@ -20,6 +21,11 @@ concurrency:
 
 jobs:
   gate:
+    # `pull-requests: write` only so that the called job `revoke-approval` can remove the label
+    # after a push; the called workflow gives it to that job alone.
+    permissions:
+      contents: read
+      pull-requests: write
     uses: ./.github/workflows/risk-gate-check.yml
     with:
       rules-file: .github/risk-paths.toml

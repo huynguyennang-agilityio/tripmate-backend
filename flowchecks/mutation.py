@@ -12,6 +12,7 @@ The default runner uses mutmut (3.x), run from the repository root. Its settings
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import os
 import re
@@ -24,10 +25,18 @@ from flowchecks import _git, risk_gate
 
 SECTION_HEADING = "## Surviving mutants"
 # Mutmut statuses that mean the tests did not catch the mutant ("no tests": no test reaches it).
-SURVIVING_STATUSES = frozenset({"survived", "no tests", "suspicious"})
+# "not checked" and an interrupted run are failures too: a mutant nobody judged is not a pass.
+SURVIVING_STATUSES = frozenset(
+    {"survived", "no tests", "suspicious", "not checked", "check was interrupted by user"}
+)
+# A pragma that takes mutants out of mutmut's reach (or lines out of coverage). Adding one to a
+# changed rule file removes survivors from view, so it has to be listed like a survivor.
+PRAGMA = re.compile(r"#\s*pragma:\s*no\s+(mutate|cover)", re.IGNORECASE)
 _NOTHING_TO_MUTATE = "nothing matches"
 
 Runner = Callable[[Sequence[str]], Iterable[str]]
+Mutmut = Callable[..., "subprocess.CompletedProcess[str]"]
+AddedLines = Callable[[str], Iterable[str]]
 
 
 def listed_mutants(description: str) -> set[str]:
@@ -52,8 +61,14 @@ def check(
     rules: Iterable[risk_gate.Rule],
     pr_description: str,
     run_mutants: Runner,
+    added_lines: AddedLines | None = None,
 ) -> list[str]:
-    """The surviving mutants of the changed rule files that the description does not list."""
+    """The surviving mutants of the changed rule files that the description does not list.
+
+    With `added_lines` (path -> the lines the change adds to it), a rule file that gains a
+    `# pragma: no mutate` or `no cover` is shown as `<path>#pragma`, which the description lists
+    like a mutant: `- <path>#pragma: <reason>`.
+    """
     rule_list = list(rules)
     rule_files = sorted(
         {p for p in changed if p.endswith(".py") and risk_gate.is_rule_file(p, rule_list)}
@@ -61,6 +76,12 @@ def check(
     if not rule_files:
         return []
     survivors = set(run_mutants(rule_files))
+    if added_lines is not None:
+        survivors |= {
+            f"{path}#pragma"
+            for path in rule_files
+            if any(PRAGMA.search(line) for line in added_lines(path))
+        }
     return sorted(survivors - listed_mutants(pr_description))
 
 
@@ -74,6 +95,7 @@ def _module_patterns(rule_files: Sequence[str]) -> list[str]:
 
 
 def _mutmut(repo: str | os.PathLike[str], *args: str) -> subprocess.CompletedProcess[str]:
+    """Run `python -m mutmut <args>` in the repository (replaced by a fake in tests)."""
     return subprocess.run(
         [sys.executable, "-m", "mutmut", *args],
         cwd=repo,
@@ -83,20 +105,29 @@ def _mutmut(repo: str | os.PathLike[str], *args: str) -> subprocess.CompletedPro
     )
 
 
-def mutmut_runner(repo: str | os.PathLike[str]) -> Runner:
-    """A runner that runs mutmut on the given rule files and returns the surviving mutants."""
+def _has_function(repo: str | os.PathLike[str], path: str) -> bool:
+    """Whether the file defines any function or method, so mutmut should have mutants for it."""
+    try:
+        tree = ast.parse((Path(repo) / path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return True  # cannot tell: do not excuse the file
+    return any(isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) for n in ast.walk(tree))
+
+
+def mutmut_runner(repo: str | os.PathLike[str], mutmut: Mutmut = _mutmut) -> Runner:
+    """A runner that runs mutmut on the given rule files and returns the mutants nobody killed."""
 
     def run_mutants(rule_files: Sequence[str]) -> list[str]:
         patterns = _module_patterns(rule_files)
-        ran = _mutmut(repo, "run", *patterns)
+        ran = mutmut(repo, "run", *patterns)
         log = f"{ran.stdout}\n{ran.stderr}"
         if ran.returncode != 0:
-            if _NOTHING_TO_MUTATE in log:
-                return []  # the files hold no function mutmut can mutate
+            if _NOTHING_TO_MUTATE in log and not any(_has_function(repo, f) for f in rule_files):
+                return []  # none of the files defines a function: there is nothing to mutate
             print(log, file=sys.stderr)
             raise RuntimeError(f"mutmut run failed with exit code {ran.returncode}")
         print(ran.stdout, file=sys.stderr)
-        report = _mutmut(repo, "results")
+        report = mutmut(repo, "results")
         if report.returncode != 0:
             print(report.stderr, file=sys.stderr)
             raise RuntimeError(f"mutmut results failed with exit code {report.returncode}")
@@ -110,6 +141,20 @@ def mutmut_runner(repo: str | os.PathLike[str]) -> Runner:
         return survivors
 
     return run_mutants
+
+
+def added_lines_of(repo: str, base: str, head: str) -> AddedLines:
+    """A function from a path to the lines `base...head` adds to it."""
+
+    def added(path: str) -> list[str]:
+        diff = _git.git(repo, "diff", "-U0", "--no-renames", f"{base}...{head}", "--", path)
+        return [
+            line[1:]
+            for line in diff.decode("utf-8", "replace").splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        ]
+
+    return added
 
 
 def changed_rule_candidates(repo: str, base: str, head: str) -> list[str]:
@@ -131,11 +176,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     rules = risk_gate.load_rules(risk_gate.resolve_rules_path(args.rules, args.repo), args.repo)
     description = Path(args.description_file).read_text(encoding="utf-8")
     changed = changed_rule_candidates(args.repo, args.base, args.head)
-    shown = check(changed, rules, description, mutmut_runner(args.repo))
+    shown = check(
+        changed,
+        rules,
+        description,
+        mutmut_runner(args.repo),
+        added_lines_of(args.repo, args.base, args.head),
+    )
     if shown:
         print(
             f"Mutation: these mutants survived and the pull request does not list them under "
-            f"`{SECTION_HEADING}` as `- <mutant>: <reason>`:",
+            f"`{SECTION_HEADING}` as `- <mutant>: <reason>` (a pragma as `<path>#pragma`):",
             file=sys.stderr,
         )
         for mutant in shown:

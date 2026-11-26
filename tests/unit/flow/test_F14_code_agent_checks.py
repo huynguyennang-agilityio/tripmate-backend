@@ -209,7 +209,16 @@ def test_the_backend_path_list_makes_the_high_items_of_the_flow_high() -> None:
     high = [
         "migrations/env.py",
         "app/trips/models.py",
+        "app/trips/schemas.py",
+        "app/trips/api.py",
+        "app/trips/events.py",
         "app/platform/models.py",
+        "app/platform/db.py",
+        "app/platform/rate_limits.py",
+        "app/main.py",
+        "app/worker.py",
+        "app/scheduler.py",
+        "tests/requirement-ids.txt",
         "app/identity/service.py",
         "app/platform/access.py",
         "app/platform/config.py",
@@ -224,7 +233,7 @@ def test_the_backend_path_list_makes_the_high_items_of_the_flow_high() -> None:
         "docs/CLAUDE.md",
         ".claude/agents/code-agent.md",
     ]
-    low = ["app/trips/service.py", "app/trips/api.py", "tests/unit/x.py", "tasks/EPIC-11.md"]
+    low = ["app/trips/service.py", "app/trips/repository.py", "tests/unit/x.py", "tasks/EPIC-11.md"]
 
     assert risk_gate.check(high + low, rules, []) == sorted(high)
 
