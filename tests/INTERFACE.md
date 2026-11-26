@@ -19,6 +19,10 @@ What the tests need from the code, and nothing more, card by card:
   (row "Requirement-to-test report"), test-strategy.md, sections 1 and
   5, and the task's scope, version 1.5 (cases F13-1 to F13-5), in the
   sections whose names start with "F13".
+- F4 Error format and error codes: from the EPIC-11 spec, section 2.3,
+  and api-design.md, sections 4.1 and 4.2 (cases F4-1 to F4-7), in the
+  section "F4: Errors", with the product owner's decisions of
+  2026-11-26 on the translation files and the pinned contracts version.
 
 ## Running the tests
 
@@ -679,3 +683,101 @@ report.unknown       # Sequence[str]
   `--ids tests/requirement-ids.txt`, two `--junit <file>`, and
   `--out <dir>`, and uploads `<dir>` as the artifact
   `requirements-report` in a step with `if: ${{ !cancelled() }}`.
+
+## F4: Errors
+
+The tests are in `tests/api/platform/test_F4_errors.py` (F4-1 to F4-5,
+level A) and `tests/unit/flow/test_F4_error_code_texts.py` (F4-6 and
+F4-7, level C).
+
+### F4: Raising an error
+
+A temporary module under `app/` (as in F1-7, through the
+`module_folder` fixture) serves routes from its `api.py`, and the tests
+call the app in-process (`client_for(build_app())`) with the settings of
+`set_settings()` (PostgreSQL and Redis on closed ports; no route of the
+tests uses them).
+
+```python
+from app.platform.errors import AppError
+
+raise AppError(status=410, code="f4probe.expired",
+               params={"expiredAt": "2026-12-01T10:00:00Z"}, fields=None)
+```
+
+- A body schema is a Pydantic model taken as the handler's body
+  parameter (`async def create_item(body: ItemBody)`), validated by
+  FastAPI as usual; the platform turns the validation failure into
+  `400 request.invalid`.
+- Something unexpected is a plain `RuntimeError`; for it the app is
+  called with `raise_app_exceptions=False`, so the error comes back as
+  the app's response.
+- Every request the tests send carries a valid `X-Device-Id` (a UUID),
+  so they stay valid when F5 requires it.
+
+### F4: The response
+
+Every error response's body is exactly `{"error": {...}}`, and the
+`error` object has exactly the keys `code`, `params`, `fields`, and
+`requestId` (api-design.md, section 4.1). `requestId` is a non-empty
+string, equal to the response header `X-Request-Id`.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F4-1 | The handler raises the `AppError` above | `410`; `code` `f4probe.expired`; `params` as raised; `fields` `null` |
+| F4-2 | `POST` with `{"amount": "not-a-number"}` to a body `{name: str, amount: int}` | `400`; `code` `request.invalid`; `fields` is a list of two entries, each exactly `{"field", "code"}`; the `field` values are `amount` and `name` (a top-level body field is named as in the schema, with no `body.` prefix); each entry's `code` is a string of the form `<area>.<reason>` in snake case (which code is the code's choice) |
+| F4-3 | `POST` with `Content-Type: application/json` and a body that is not JSON | `400`; `code` `request.invalid` (`params` and `fields` not checked) |
+| F4-4 | The handler raises `RuntimeError(<random secret>)` | `500`; `code` `server.error`; `params` `{}` or `null`; `fields` `null`; the body holds neither the secret, nor `RuntimeError`, `Traceback`, or `File "` |
+| F4-5 | Two successful requests, and two requests that fail with `AppError` | Each successful response carries `X-Request-Id`; the two values differ; the two `requestId` values differ |
+
+### F4: Registering codes
+
+A module registers the codes it can return in its `register(registry)`
+hook (`app/platform/modules.py`):
+
+```python
+# app/<module>/__init__.py
+def register(registry):
+    registry.add_error_codes("f4probe.expired")
+```
+
+F4-6 reads the registered codes with
+`from app.platform.modules import scan_modules; scan_modules().error_codes`;
+the set holds every code a temporary module registered.
+
+### F4: The error code text check (`flowchecks.error_codes`)
+
+The texts live in `tripmate-contracts`, at the version the backend pins
+by commit SHA; CI checks that repository out at the SHA. The check
+itself reads only a folder on disk and the set of codes it is given; it
+never uses the network.
+
+- The folder is `translations/`, holding one folder per language,
+  `en` and `vi`. Each holds `<area>.json` files, each one flat JSON
+  object of strings, UTF-8. The key is the error code; the area is the
+  part of the code before the first dot (`request.invalid` is a key of
+  `translations/vi/request.json`). A file may hold keys of codes that
+  are not registered.
+- A code has text in a language when its area file in that language
+  exists and holds the code as a key with a string value.
+
+```python
+from flowchecks import error_codes
+
+missing: list[str] = error_codes.check(translations_dir, codes)
+```
+
+- `translations_dir`: `str | os.PathLike[str]`, the `translations`
+  folder itself; `codes`: `Iterable[str]`, the registered codes.
+- It returns the codes of `codes` that have no text in `en` or no text
+  in `vi`, each once, in any order; `[]` is a pass.
+- The tests call only this function. How CI runs it (for example a
+  command `python -m flowchecks.error_codes --translations <dir>` over
+  `scan_modules().error_codes` and the platform's own codes, exiting
+  non-zero and printing each missing code) is the code's choice and is
+  not run by the tests.
+
+| Case | Translations | Codes | Expected |
+|------|--------------|-------|----------|
+| F4-6 | `en/f4probe.json` has `f4probe.no_vietnamese_text` and `f4probe.has_both_texts`; `vi/f4probe.json` only the second; `en/f4nofile.json` has `f4nofile.no_vietnamese_file` and there is no `vi/f4nofile.json` | `scan_modules().error_codes`, holding all three from a temporary module's `register` | Holds `f4probe.no_vietnamese_text` and `f4nofile.no_vietnamese_file`, not `f4probe.has_both_texts` |
+| F4-7 | `request.invalid` and `f4probe.has_both_texts` in `en` and `vi`; `en/f4probe.json` also holds an unregistered key | Those two codes | `[]` |

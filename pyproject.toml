@@ -125,3 +125,4 @@ name = "flowchecks imports nothing of the app"
 type = "forbidden"
 source_modules = ["flowchecks"]
 forbidden_modules = ["app"]
+

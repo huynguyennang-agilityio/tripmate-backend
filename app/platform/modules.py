@@ -15,8 +15,8 @@ of the platform itself, from cards F7 and F8), into `Base.metadata`.
 
 Adding a module therefore changes no shared file, and `platform` never
 imports a module by name. Only the registration lives here: running the
-jobs, handlers, and due-work queries comes with card F9, and checking the
-error codes with card F4.
+jobs, handlers, and due-work queries comes with card F9. The error codes are
+checked by `flowchecks.error_codes` (card F4): each needs text in both languages.
 """
 
 from __future__ import annotations

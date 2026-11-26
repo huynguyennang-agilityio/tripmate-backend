@@ -1,6 +1,6 @@
 # Backend CI (EPIC-11 spec, section 2.9). Each job is one required check on `main`;
 # the job `name` is the check's name, so keep the names stable.
-# Checks of later cards (F4, F5, F11, F12, F14) join in their own cards.
+# Checks of later cards (F5, F11, F12, F14) join in their own cards.
 name: CI
 
 on:
@@ -179,6 +179,38 @@ jobs:
           version: "0.13.7"
       - run: uv sync
       - run: uv run lint-imports
+
+  error-codes:
+    name: error-codes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the pinned contracts version
+        id: pin
+        run: |
+          sha="$(tr -d '[:space:]' < contracts-ref)"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "contracts-ref must hold one full 40-character commit SHA of tripmate-contracts" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: huynguyennang-agilityio/tripmate-contracts
+          ref: ${{ steps.pin.outputs.sha }}
+          path: contracts
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - run: uv sync
+      - name: List the codes and check their texts
+        run: |
+          uv run python -m app.platform.error_codes > error-codes.txt
+          uv run python -m flowchecks.error_codes --translations contracts/translations --codes error-codes.txt
 
   migrations:
     name: migrations
