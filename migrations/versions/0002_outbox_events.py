@@ -25,10 +25,13 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), sa.Identity(), nullable=False),
         sa.Column("trip_id", sa.Uuid(), nullable=False),
         sa.Column("trip_seq", sa.BigInteger(), nullable=False),
-        sa.Column("type", sa.String(), nullable=False),
+        sa.Column("type", sa.Text(), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.clock_timestamp(),
+            nullable=False,
         ),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_outbox_events")),

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Identity, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, Identity, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,10 +30,10 @@ class OutboxEvent(Base):
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     trip_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     trip_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    type: Mapped[str] = mapped_column(nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
