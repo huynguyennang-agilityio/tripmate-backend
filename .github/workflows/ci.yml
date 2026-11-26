@@ -1,6 +1,6 @@
 # Backend CI (EPIC-11 spec, section 2.9). Each job is one required check on `main`;
 # the job `name` is the check's name, so keep the names stable.
-# Checks of later cards (F5, F11, F12, F14) join in their own cards.
+# Checks of later cards (F5, F11, F14) join in their own cards.
 name: CI
 
 on:
@@ -211,6 +211,62 @@ jobs:
         run: |
           uv run python -m app.platform.error_codes > error-codes.txt
           uv run python -m flowchecks.error_codes --translations contracts/translations --codes error-codes.txt
+
+  contract:
+    name: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # No services: the contract is generated without PostgreSQL or Redis, and Schemathesis
+    # calls the app in process (ASGI). The contract tests of tests/contract run in
+    # `integration`, which runs every test outside tests/unit.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - run: uv sync
+      - name: Generate openapi.json
+        run: uv run python -m app.platform.contract generate openapi.json
+      - name: Every stub response has an example
+        run: uv run python -m app.platform.contract check openapi.json
+      - name: Schemathesis on the routes that are answered
+        # `/v1/health` is left out: it needs PostgreSQL and Redis (the integration tests
+        # call it). A pass with no operation to test would fail, so it runs only when the
+        # contract has one.
+        run: |
+          operations() {
+            jq --argjson stub "$1" '[.paths | to_entries[] | select(.key != "/v1/health") | .value
+              | to_entries[] | select(.value | type == "object")
+              | select((.value["x-stub"] // false) == $stub)] | length' openapi.json
+          }
+          if [ "$(operations false)" -gt 0 ]; then
+            uv run schemathesis run openapi.json --app app.platform.contract:contract_app \
+              --exclude-path /v1/health --exclude-by "/x-stub == true"
+          else
+            echo "No answered route besides /v1/health: nothing to run."
+          fi
+      - name: Schemathesis on the stubs
+        # A stub answers 501 `server.not_implemented`, which its operation documents with an
+        # example; Schemathesis counts any 5xx as a failure, so this pass skips that one
+        # check and keeps the others (status, content type, response schema).
+        run: |
+          stubs="$(jq '[.paths[][] | select(type == "object" and .["x-stub"] == true)] | length' openapi.json)"
+          if [ "$stubs" -gt 0 ]; then
+            uv run schemathesis run openapi.json --app app.platform.contract:contract_app \
+              --include-by "/x-stub == true" --exclude-checks not_a_server_error
+          else
+            echo "No stub in the contract."
+          fi
+      - name: Keep the contract
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openapi
+          overwrite: true
+          path: openapi.json
+          if-no-files-found: error
 
   migrations:
     name: migrations
