@@ -8,6 +8,9 @@ What the tests need from the code, and nothing more, card by card:
 - F3 Database session and migrations: from the EPIC-11 spec, sections
   2.2 (Transaction) and 4.2 (cases F3-1 to F3-5), in the sections whose
   names start with "F3".
+- F8 Outbox: from the EPIC-11 spec, sections 2.5 and 4.2, and
+  data-model.md, section 6.2 (cases F8-1 to F8-5), in the section
+  "F8: Outbox".
 - F14 Flow checks and agent roles: from the EPIC-11 spec, section 2.12,
   development-flow.md, sections 2.1 and 2.3, and the task's scope
   (cases F14-1 to F14-11; F14-12 is a manual check), in the sections
@@ -274,6 +277,67 @@ the platform after the handler returns and before the response.
   model is in `app/<temporary module>/models.py` (a module folder with
   `__init__.py` and `models.py`, no `api.py`), and adding it changes no
   shared file.
+
+## F8: Outbox
+
+`app/platform/outbox.py` holds the outbox (spec, section 2.1,
+`platform` part `outbox`). A module adds a domain event with one call
+inside its transaction (spec, section 2.5):
+
+```python
+from app.platform.outbox import add_event
+
+trip_seq: int = await add_event(
+    session, trip_id=trip_id, type="expense.changed", payload={"id": "...", "version": 3}
+)
+```
+
+- `session` is an SQLAlchemy `AsyncSession` inside an open
+  transaction: the request's session from `get_session`, or a session
+  the caller began (`async with AsyncSession(engine) as s, s.begin():`).
+  The arguments after `session` are keyword-only; `trip_id` is a
+  `uuid.UUID`, `payload` a JSON object. It returns the event's
+  `trip_seq`.
+- `add_event` never commits. The event is stored when that
+  transaction commits and never when it rolls back.
+- The table `outbox_events` is created by an Alembic migration
+  (data-model.md, section 6.2, and the `OUTBOX_EVENTS` diagram):
+
+  | Column | Type | Rule |
+  |--------|------|------|
+  | `id` | `bigint` | Primary key, from a sequence or identity |
+  | `trip_id` | `uuid` | Not null; no foreign key yet (EPIC-02 adds it) |
+  | `trip_seq` | `bigint` | Not null; unique together with `trip_id` |
+  | `type` | `text` | Not null |
+  | `payload` | `jsonb` | Not null |
+  | `created_at` | `timestamptz` | Not null, set by the database |
+  | `published_at` | `timestamptz` | Null; empty when the event is added |
+
+- `trip_seq` numbering, per trip: the first event of a trip gets `1`,
+  each next event the previous plus one, with no gap, also across
+  transactions, also when a transaction that added an event rolled
+  back (its number is used again), and also when two transactions of
+  the same trip run at the same time (the second waits for the first;
+  both commit; their values differ and are consecutive). Within a
+  transaction, `id` order follows the order the events were added.
+- How the code keeps the per-trip counter is not part of the
+  interface (it may use a helper table); the tests read only
+  `outbox_events` and their own probe table.
+- The tests bring the database of `TEST_DATABASE_URL` to the head
+  migration themselves, once per test file: `<python> -m alembic
+  upgrade head` from the repository root, as in "F3: Migrations".
+  Without `TEST_DATABASE_URL` the tests fail; they never skip.
+- The tests read the rows back through a connection of their own,
+  after the commit. Before each test the autouse cleaning empties
+  every table ("F3: A clean database for each integration test").
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F8-1 | A transaction adds one event and commits (on a new trip; and after an earlier committed event of the trip) | One row with the trip's next `trip_seq` (`1`, then `2`), the `type` and `payload` given, and `published_at` empty |
+| F8-2 | A request whose handler (`Depends(get_session)`) writes a record into the probe table, adds an event, then raises; and the same in a session the test began | No outbox row and no record. A control request of the same shape that returns stores both. After the rollback, the trip's next committed event gets `1` |
+| F8-3 | One transaction adds two events | Two rows with consecutive `trip_seq` (`1`, `2`), in `id` order matching the order added |
+| F8-4 | Two sessions of the same trip: the second adds its event while the first's transaction is still open; both commit | Their `trip_seq` values differ and are `1` and `2`; a step that waits more than 15 seconds fails the test |
+| F8-5 | Events of two trips, interleaved within and across transactions | Each trip is numbered `1`, `2`, ... on its own |
 
 ## F14: Flow checks
 
