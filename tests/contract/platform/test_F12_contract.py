@@ -52,7 +52,9 @@ def test_F12_3_stub_response_schema_without_example_fails_the_check_naming_the_o
     from app.platform.contract import check_examples
 
     name = module_folder({"__init__.py": ""})
-    good, bare = name.replace("_", "-"), f"{name.replace('_', '-')}-bare"
+    # Neither segment is a prefix of the other, so neither operation's
+    # "<METHOD> <path>" is a substring of the other's.
+    good, bare = name.replace("_", "-"), f"bare-{name.replace('_', '-')}"
     good_operation, bare_operation = f"GET {MODULE_PREFIX}/{good}", f"GET {MODULE_PREFIX}/{bare}"
     api = APP_DIR / name / "api.py"
 
