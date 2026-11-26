@@ -257,7 +257,7 @@ and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow check
 A push to `main` also runs `.github/workflows/publish-contract.yml` (environment `contracts`):
 when `openapi.json` changed, it opens or updates the pull request from `backend/openapi` in
 `tripmate-contracts`. Generate the file by hand with
-`uv run python -m app.platform.contract generate openapi.json`.
+`uv run python -m app.contract generate openapi.json`.
 
 ## How a card is built
 

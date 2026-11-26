@@ -2,26 +2,21 @@
 
 - `stub()` declares a route that is only a contract: marked `x-stub: true`, answering
   `501 server.not_implemented`.
-- `generate` writes the app's `openapi.json`; `check` runs the example check on it.
-- `contract_app` is the app as the contract job tests it (Schemathesis, in process).
+- `check_examples()` names each stub operation with a response schema that has no example.
 
-Run `python -m app.platform.contract generate <path>` and `... check <path>`.
+The generator and the CLI are the process entry point `app/contract.py` (`python -m app.contract
+generate|check <path>`); `python -m app.platform.contract ...` runs the same code.
 """
 
 from __future__ import annotations
 
-import importlib
 import inspect
-import json
-import sys
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 
-from app.platform.config import Settings
 from app.platform.errors import AppError
 
 NOT_IMPLEMENTED_CODE = "server.not_implemented"
@@ -154,7 +149,11 @@ def check_examples(contract: dict[str, Any]) -> list[str]:
                 continue
             missing = []
             for status, response in sorted(operation.get("responses", {}).items()):
-                if str(status) in FRAMEWORK_RESPONSES or not isinstance(response, dict):
+                if str(status) in FRAMEWORK_RESPONSES:
+                    continue
+                # A response may be a `$ref` to `components/responses`.
+                response = _resolve(contract, response)
+                if not isinstance(response, dict):
                     continue
                 for media_type, media in sorted(response.get("content", {}).items()):
                     if "example" in media or media.get("examples"):
@@ -169,52 +168,17 @@ def check_examples(contract: dict[str, Any]) -> list[str]:
     return problems
 
 
-def contract_app() -> FastAPI:
-    """The app as the contract sees it: every module found by scanning `app/`.
-
-    The settings are fixed placeholders, not the environment: the contract must be the
-    same file on every machine, and no service is needed, because the lifespan (which
-    would make the engine and the Redis client) is not run to read the contract.
-    """
-    settings = Settings(
-        database_url="postgresql+asyncpg://contract@127.0.0.1/contract",
-        redis_url="redis://127.0.0.1/0",
-        release_version=CONTRACT_VERSION,
-    )
-    # `platform` imports no module and no process (import-linter), so the process module
-    # is loaded by name: the contract must be the app the API process serves.
-    create_app: Callable[[Settings], FastAPI] = importlib.import_module("app.main").create_app
-    return create_app(settings)
-
-
-def render_contract(app: FastAPI | None = None) -> str:
-    """The contract as JSON text: sorted keys, indent 2, a newline at the end."""
-    document = (app or contract_app()).openapi()
-    return json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-
-
-def generate(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(render_contract().encode("utf-8"))
-
-
-def check(path: Path) -> int:
-    problems = check_examples(json.loads(path.read_text(encoding="utf-8")))
-    for problem in problems:
-        print(problem, file=sys.stderr)
-    return 1 if problems else 0
-
-
 def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 2 or args[0] not in {"generate", "check"}:
-        print("usage: python -m app.platform.contract (generate|check) <path>", file=sys.stderr)
-        return 2
-    path = Path(args[1])
-    if args[0] == "generate":
-        generate(path)
-        return 0
-    return check(path)
+    """`python -m app.platform.contract ...` runs the process entry point, `app.contract`.
+
+    The command is the one the tests and tests/INTERFACE.md fix. Building the app is a
+    process's job, and `platform` imports no process (import-linter), so the module
+    is run by name rather than imported.
+    """
+    import runpy
+
+    runpy.run_module("app.contract", run_name="__main__", alter_sys=True)
+    return 0
 
 
 if __name__ == "__main__":
