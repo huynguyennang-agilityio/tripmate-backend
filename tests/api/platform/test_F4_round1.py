@@ -17,7 +17,8 @@ from tests.support import APP_DIR, build_app, client_for
 ERROR_KEYS = {"code", "params", "fields", "requestId"}
 
 API_SOURCE = """\
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -40,6 +41,11 @@ async def teapot() -> dict[str, str]:
 @router.get("/{segment}/broken")
 async def broken() -> dict[str, str]:
     raise HTTPException(status_code=503, detail="secret detail")
+
+
+@router.get("/{segment}/secure")
+async def secure(credentials=Depends(HTTPBearer())) -> dict[str, str]:
+    return {{"ok": "yes"}}
 
 
 @router.post("/{segment}/items")
@@ -104,7 +110,7 @@ async def test_F4_r1_unknown_route_and_wrong_method_use_the_error_format(
 
 
 @pytest.mark.asyncio
-async def test_F4_r1_http_exception_keeps_status_and_drops_detail(
+async def test_F4_r1_other_http_exceptions_are_unexpected_500_server_error(
     set_settings, module_folder
 ) -> None:
     set_settings()
@@ -113,12 +119,17 @@ async def test_F4_r1_http_exception_keeps_status_and_drops_detail(
     async with client_for(build_app()) as client:
         client_error = await client.get(f"{base}/teapot")
         server_error = await client.get(f"{base}/broken")
+        # HTTPBearer raises HTTPException(401 or 403) when the header is missing.
+        unauthorized = await client.get(f"{base}/secure")
 
-    assert client_error.status_code == 418
-    assert _error_of(client_error)["code"] == "request.invalid"
-    assert server_error.status_code == 503
-    assert _error_of(server_error)["code"] == "server.error"
-    assert "secret detail" not in client_error.text + server_error.text
+    for response in (client_error, server_error, unauthorized):
+        assert response.status_code == 500, response.text
+        error = _error_of(response)
+        assert error["code"] == "server.error"
+        assert error["params"] == {} and error["fields"] is None
+        assert "secret detail" not in response.text
+        assert "Not authenticated" not in response.text
+        assert "www-authenticate" not in response.headers
 
 
 def test_F4_r1_openapi_documents_400_error_response_not_422(set_settings, module_folder) -> None:

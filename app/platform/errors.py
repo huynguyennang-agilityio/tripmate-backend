@@ -127,24 +127,29 @@ async def _validation_error_handler(request: Request, error: Exception) -> JSONR
     return JSONResponse(status_code=400, content=error_body(invalid, _request_id_of(request)))
 
 
-def _http_error_code(status: int) -> str:
-    if status == 404:
-        return NOT_FOUND
-    if status == 405:
-        return METHOD_NOT_ALLOWED
-    return REQUEST_INVALID if 400 <= status < 500 else SERVER_ERROR
-
-
 async def _http_exception_handler(request: Request, error: Exception) -> JSONResponse:
+    """Only an unknown route (404) and a wrong method (405) are expected `HTTPException`s.
+
+    They keep their status and headers (`Allow`), without the detail. Any other `HTTPException`
+    is unexpected: modules raise `AppError` for their own errors. It is answered `500
+    server.error` with the request ID and no detail, and its status is logged.
+    """
     if not isinstance(error, StarletteHTTPException):  # registered for it only
         raise error
-    # The detail is dropped (a 5xx must carry none); the status and headers (`Allow`,
-    # `WWW-Authenticate`) are kept.
-    app_error = AppError(error.status_code, _http_error_code(error.status_code))
+    request_id = _request_id_of(request)
+    if error.status_code in (404, 405):
+        code = NOT_FOUND if error.status_code == 404 else METHOD_NOT_ALLOWED
+        content = error_body(AppError(error.status_code, code), request_id)
+        return JSONResponse(status_code=error.status_code, content=content, headers=error.headers)
+    logger.error(
+        "Unexpected HTTPException with status %s in request %s: %s %s",
+        error.status_code,
+        request_id,
+        request.method,
+        request.url.path,
+    )
     return JSONResponse(
-        status_code=error.status_code,
-        content=error_body(app_error, _request_id_of(request)),
-        headers=error.headers,
+        status_code=500, content=error_body(AppError(500, SERVER_ERROR), request_id)
     )
 
 
