@@ -190,7 +190,13 @@ jobs:
           persist-credentials: false
       - name: Read the pinned contracts version
         id: pin
-        run: echo "sha=$(tr -d '[:space:]' < contracts-ref)" >> "$GITHUB_OUTPUT"
+        run: |
+          sha="$(tr -d '[:space:]' < contracts-ref)"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "contracts-ref must hold one full 40-character commit SHA of tripmate-contracts" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: huynguyennang-agilityio/tripmate-contracts
@@ -201,7 +207,10 @@ jobs:
         with:
           version: "0.13.7"
       - run: uv sync
-      - run: uv run python -m flowchecks.error_codes --translations contracts/translations
+      - name: List the codes and check their texts
+        run: |
+          uv run python -m app.platform.error_codes > error-codes.txt
+          uv run python -m flowchecks.error_codes --translations contracts/translations --codes error-codes.txt
 
   migrations:
     name: migrations

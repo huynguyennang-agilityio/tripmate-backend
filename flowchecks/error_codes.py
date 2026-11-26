@@ -7,8 +7,11 @@ repository out at the commit in `contracts-ref` and runs
 
     python -m flowchecks.error_codes --translations <checkout>/translations
 
-over the codes the modules register (`scan_modules`) and the platform's own codes. It prints
-each code that lacks text and exits 1 when there is any (2 when the folder cannot be read).
+over the codes in the file given by `--codes` (one per line; `-` reads standard input). This
+package knows nothing of the app: the app prints its codes with
+`python -m app.platform.error_codes`. A text that is empty or only white space counts as missing.
+It prints each code that lacks text and exits 1 when there is any (2 when a folder or the code
+file cannot be read).
 """
 
 from __future__ import annotations
@@ -46,7 +49,8 @@ def check(translations_dir: str | os.PathLike[str], codes: Iterable[str]) -> lis
         for language in LANGUAGES:
             if (language, area) not in cache:
                 cache[(language, area)] = _texts(translations, language, area)
-            if not isinstance(cache[(language, area)].get(code), str):
+            text = cache[(language, area)].get(code)
+            if not (isinstance(text, str) and text.strip()):
                 missing.add(code)
     return sorted(missing)
 
@@ -54,13 +58,12 @@ def check(translations_dir: str | os.PathLike[str], codes: Iterable[str]) -> lis
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--translations", required=True, help="the `translations` folder")
+    parser.add_argument("--codes", required=True, help="file with one code per line; - is stdin")
     args = parser.parse_args(argv)
 
-    from app.platform.errors import PLATFORM_ERROR_CODES
-    from app.platform.modules import scan_modules
-
-    codes = scan_modules().error_codes | PLATFORM_ERROR_CODES
     try:
+        raw = sys.stdin.read() if args.codes == "-" else Path(args.codes).read_text("utf-8")
+        codes = {line.strip() for line in raw.splitlines() if line.strip()}
         missing = check(args.translations, codes)
     except (OSError, ValueError) as error:
         print(f"Error codes: {error}", file=sys.stderr)

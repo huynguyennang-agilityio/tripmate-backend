@@ -120,14 +120,9 @@ ancestors = ["app"]
 depth = 1
 
 # The flow checks are generic: other repositories run them, so they know no module of the app.
-# The one exception is the command line of the error code check, which scans this app's modules
-# (`check` itself is generic and imports nothing of the app).
 [[tool.importlinter.contracts]]
 name = "flowchecks imports nothing of the app"
 type = "forbidden"
 source_modules = ["flowchecks"]
 forbidden_modules = ["app"]
-ignore_imports = [
-    "flowchecks.error_codes -> app.platform.errors",
-    "flowchecks.error_codes -> app.platform.modules",
-]
+

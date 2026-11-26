@@ -66,7 +66,7 @@ every push to `main`. Each job is a check that is required on `main`
 | `integration` | `pytest tests --ignore=tests/unit` (everything but the unit tests) against PostgreSQL 16 and Redis 7 service containers |
 | `requirements` | after `unit` and `integration` (it runs even when one failed, but not when the run was cancelled, and fails when a JUnit artifact is missing): `flowchecks.requirements` reads the JUnit XML both jobs write, keeps `requirements-report.md` and `.json` as an artifact, and writes the job summary |
 | `imports` | `lint-imports` |
-| `error-codes` | `flowchecks.error_codes`: every error code a module registers (`registry.add_error_codes`) or the platform returns (`PLATFORM_ERROR_CODES`) has text in `en` and `vi` in the `translations` folder of `tripmate-contracts`, checked out at the commit in `contracts-ref` |
+| `error-codes` | `python -m app.platform.error_codes` lists the codes; `flowchecks.error_codes --translations <dir> --codes <file>` checks that every error code a module registers (`registry.add_error_codes`) or the platform returns (`PLATFORM_ERROR_CODES`) has text in `en` and `vi` in the `translations` folder of `tripmate-contracts`, checked out at the commit in `contracts-ref` (the job fails unless the file holds a full 40-character SHA) |
 | `migrations` | exactly one Alembic head, `alembic upgrade head`, `alembic check` |
 | `audit` | `pip-audit` on the locked dependencies |
 | `secrets` | gitleaks over the commits of the change and the checked-out files |

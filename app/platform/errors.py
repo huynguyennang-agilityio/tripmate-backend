@@ -4,9 +4,11 @@
 - `install_error_handlers` turns it, and every request that breaks its schema (`400
   request.invalid`, one `fields` entry per problem), into the body of section 4.1.
 - `install_request_id` puts a new request ID on every response (header `X-Request-Id`, equal
-  to `requestId` in an error body) and turns anything unexpected into `500 server.error` with
-  that ID and no detail. The full error goes to the process log only; sending it to error
+  to `requestId` in an error body), answers an `AppError` raised by a middleware, and turns
+  anything unexpected into `500 server.error` with that ID and no detail. The full error goes to the process log only; sending it to error
   reporting is card F10.
+- `install_openapi` documents `400` in the 4.1 format (`ErrorResponse`) in place of FastAPI's
+  `422 HTTPValidationError`.
 - `PLATFORM_ERROR_CODES` are the codes the platform itself returns. With the codes the modules
   register (`Registry.add_error_codes`), they are what `flowchecks.error_codes` checks for text
   in both languages.
@@ -22,6 +24,8 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
@@ -33,12 +37,22 @@ SERVER_ERROR = "server.error"
 SERVER_UNAVAILABLE = "server.unavailable"
 FIELD_MISSING = "request.field_missing"
 FIELD_INVALID = "request.field_invalid"
+NOT_FOUND = "request.not_found"
+METHOD_NOT_ALLOWED = "request.method_not_allowed"
 
 # Codes the platform returns itself; each needs text in `tripmate-contracts`.
 # (`server.unavailable` is returned by the health check and the rate limit, cards F1 and F6.)
 # The two field codes are all a `fields` entry can carry, so the set stays closed.
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
-    {REQUEST_INVALID, SERVER_ERROR, SERVER_UNAVAILABLE, FIELD_MISSING, FIELD_INVALID}
+    {
+        REQUEST_INVALID,
+        SERVER_ERROR,
+        SERVER_UNAVAILABLE,
+        FIELD_MISSING,
+        FIELD_INVALID,
+        NOT_FOUND,
+        METHOD_NOT_ALLOWED,
+    }
 )
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -113,9 +127,79 @@ async def _validation_error_handler(request: Request, error: Exception) -> JSONR
     return JSONResponse(status_code=400, content=error_body(invalid, _request_id_of(request)))
 
 
+def _http_error_code(status: int) -> str:
+    if status == 404:
+        return NOT_FOUND
+    if status == 405:
+        return METHOD_NOT_ALLOWED
+    return REQUEST_INVALID if 400 <= status < 500 else SERVER_ERROR
+
+
+async def _http_exception_handler(request: Request, error: Exception) -> JSONResponse:
+    if not isinstance(error, StarletteHTTPException):  # registered for it only
+        raise error
+    # The detail is dropped (a 5xx must carry none); the status and headers (`Allow`,
+    # `WWW-Authenticate`) are kept.
+    app_error = AppError(error.status_code, _http_error_code(error.status_code))
+    return JSONResponse(
+        status_code=error.status_code,
+        content=error_body(app_error, _request_id_of(request)),
+        headers=error.headers,
+    )
+
+
 def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, _app_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
+    app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
+
+
+class FieldProblem(BaseModel):
+    field: str
+    code: str
+
+
+class ErrorDetail(BaseModel):
+    code: str
+    params: dict[str, Any]
+    fields: list[FieldProblem] | None
+    requestId: str  # noqa: N815 (the name in the contract)
+
+
+class ErrorResponse(BaseModel):
+    """The body of every error response (api-design.md, section 4.1)."""
+
+    error: ErrorDetail
+
+
+def install_openapi(app: FastAPI) -> None:
+    """Document `400 ErrorResponse` where FastAPI documents `422 HTTPValidationError`."""
+
+    def openapi() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            schema = FastAPI.openapi(app)
+            components = schema.setdefault("components", {}).setdefault("schemas", {})
+            for name in ("HTTPValidationError", "ValidationError"):
+                components.pop(name, None)
+            model = ErrorResponse.model_json_schema(ref_template="#/components/schemas/{model}")
+            components.update(model.pop("$defs", {}))
+            components["ErrorResponse"] = model
+            for item in schema.get("paths", {}).values():
+                for operation in item.values():
+                    responses = operation.get("responses", {})
+                    if responses.pop("422", None) is not None:
+                        responses["400"] = {
+                            "description": "The request is not valid (api-design.md, 4.1)",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/ErrorResponse"}
+                                }
+                            },
+                        }
+            app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = openapi  # type: ignore[method-assign]
 
 
 class RequestIdMiddleware:
@@ -124,6 +208,10 @@ class RequestIdMiddleware:
     Pure ASGI, so it sees every response, including the 500 it builds itself (a handler
     registered for `Exception` would run outside the middleware and miss the header). The
     unexpected error is logged here with its stack; the response holds neither.
+
+    It must be the outermost middleware: `create_app` installs it last. Inside it, an `AppError`
+    that another middleware raises (`ExceptionMiddleware` sits inside every user middleware, so
+    it never sees one) is answered here with its own status and body.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -148,12 +236,15 @@ class RequestIdMiddleware:
 
         try:
             await self.app(scope, receive, send_with_id)
-        except Exception:
+        except Exception as error:
             if started:  # the response is on its way; nothing left to answer
                 raise
-            logger.exception("Unexpected error in request %s", request_id)
-            body = error_body(AppError(500, SERVER_ERROR), request_id)
-            await JSONResponse(status_code=500, content=body)(scope, receive, send_with_id)
+            if isinstance(error, AppError):
+                status, body = error.status, error_body(error, request_id)
+            else:
+                logger.exception("Unexpected error in request %s", request_id)
+                status, body = 500, error_body(AppError(500, SERVER_ERROR), request_id)
+            await JSONResponse(status_code=status, content=body)(scope, receive, send_with_id)
 
 
 def install_request_id(app: FastAPI) -> None:
