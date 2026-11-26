@@ -14,13 +14,16 @@
 # `pull-requests: write` runs nothing from the pull request). The pull request's fields
 # reach the scripts only through `env:`.
 #
-# An approval is fresh only when added after the newest commit. On every event the gate reads the
-# timeline and counts `human-approved` only when its last `labeled` event is later than the newest
-# `committed` (its author or committer date) or `head_ref_force_pushed` (its push time) event.
-# That alone is not enough: a commit's dates come from the author's machine, not from the push, so
-# a slow clock or a backdated commit looks older than it is. The removal below is the exact
-# signal (it runs at the push), so both stay: the freshness check covers a removal that never ran
-# or failed, the removal covers the dates. The caller keeps the push run from being cancelled.
+# An approval is fresh only when added after the head commit reached the pull request. On every
+# event the gate reads the timeline and the check suites of the head commit, and counts
+# `human-approved` only when its last `labeled` event is later than the arrival of the head
+# commit. The arrival is a time GitHub sets, never a commit date (a commit made before the label
+# but pushed after it would look old, and a future-dated one would block approval): the earliest
+# GitHub Actions check suite of the head commit for this pull request (created when the push
+# arrives; a suite on another branch does not count, the commit may have been pushed there
+# earlier), or the time of a force push (`head_ref_force_pushed`) when later. When no such suite
+# can be read the label does not count. The removal below stays as the exact signal at the push,
+# and the caller keeps the push run from being cancelled by a later event.
 #
 # An approval ends with a push. On `synchronize`, when the pull request carries `human-approved`,
 # the job `revoke-approval` removes the label (the only job with `pull-requests: write`; it
@@ -87,8 +90,10 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      # Only to read the pull request's timeline (when the label was added, when commits arrived).
+      # Read the pull request's timeline (when the label was added) and the check suites of the
+      # head commit (when it reached the pull request). Nothing is written.
       pull-requests: read
+      checks: read
     steps:
       - name: The approval must have been removed when it had to be
         env:
@@ -133,17 +138,21 @@ jobs:
           git fetch --no-tags origin "$HEAD_SHA" \
             || git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
           git cat-file -e "${HEAD_SHA}^{commit}"
-      - name: Read the timeline of the pull request
-        # On every event, `human-approved` counts only when it was last added after the newest
+      - name: Read the timeline and the check suites of the head commit
+        # On every event, `human-approved` counts only when it was last added after the head
         # commit reached the pull request (flowchecks.risk_gate.approval_is_fresh). Read-only.
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           gh api --paginate --slurp \
             "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" \
             > "$RUNNER_TEMP/timeline.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/commits/${HEAD_SHA}/check-suites?per_page=100" \
+            > "$RUNNER_TEMP/check-suites.json"
       - name: Risk gate
         # The labels come from the event payload (no token needed) as data in an environment
         # variable. A re-run of this job sees the labels of the original event, so the caller
@@ -152,6 +161,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RULES_FILE: ${{ inputs.rules-file }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           # "success" when a push has just removed the approval: the payload still lists it.
           REVOKE_RESULT: ${{ needs.revoke-approval.result }}
@@ -168,4 +179,6 @@ jobs:
           uv run --no-project --python 3.13 python -m flowchecks.risk_gate \
             --rules "$RULES_FILE" --repo "$GITHUB_WORKSPACE" \
             --base "$BASE_SHA" --head "$HEAD_SHA" \
-            --timeline-file "$RUNNER_TEMP/timeline.json" "${label_args[@]}"
+            --timeline-file "$RUNNER_TEMP/timeline.json" \
+            --check-suites-file "$RUNNER_TEMP/check-suites.json" \
+            --pr-number "$PR_NUMBER" --head-ref "$HEAD_REF" "${label_args[@]}"

@@ -97,7 +97,7 @@ always skipped here; never require it.
 | Check | Fails when |
 |-------|------------|
 | `failing-first` | A test that a test commit (trailer `Agent: test`) adds passes at that commit. Each test commit is checked out and run in turn; a commit that only changes tests is not asked to fail. Pytest exit 1 or 2 counts as failing first, and so does exit 4 when its output has `ERROR collecting <the test's own file>` (a test ID whose module fails to import); any other exit, such as a crashing `conftest.py`, is an error of the run and fails the check. Runs against PostgreSQL 16 and Redis 7. |
-| `test-lock` | A commit without the trailer changes, skips, or deletes a locked test (its function or method, with the module and class context it uses: imports, constants, helpers, `pytestmark`) or a locked support file; the head is compared with the last locked state too, so a merge cannot hide a change. A test commit that touches a path outside `tests/` fails too, and so does any commit without the trailer that adds, changes, or deletes a `conftest.py` at any depth (also one that came from `main`); a needed change goes through the test agent. A new test a code commit adds is not locked. |
+| `test-lock` | A commit without the trailer changes, skips, or deletes a locked test (its function or method, with the module and class context it uses: imports, constants, helpers, `pytestmark`) or a locked support file; the head is compared with the last locked state too, so a merge cannot hide a change. A test commit that touches a path outside `tests/` fails too, and so does any commit without the trailer that adds, changes, or deletes a `conftest.py` at any depth (also one that came from `main`), and so does a merge commit that leaves any `conftest.py` different from its text at the last test commit that touched it (or at the merge base); a needed change goes through the test agent. A new test a code commit adds is not locked. |
 | `mutation` | A changed rule file has a surviving, untested, or unchecked mutant (mutmut), or gains a `# pragma: no mutate` or `no cover`, that the pull request description does not list |
 | `risk-gate` | A High path changed and the pull request has no `human-approved` label |
 
@@ -113,13 +113,17 @@ always skipped here; never require it.
   `synchronize` only; `labeled`, `unlabeled`, and `edited` never do), and the
   gate then judges that push as unapproved; the product owner adds the label
   again after reading the new commits. On every event the gate also counts the
-  label only when its last `labeled` timeline event is later than the newest
-  commit on the pull request (`committed` events, by their author or committer
-  date, and `head_ref_force_pushed` events, by their push time;
-  `flowchecks.risk_gate.approval_is_fresh`, read with `pull-requests: read`).
-  Commit dates come from the author's machine, so this is the second layer; the
-  removal at the push is the exact one, and a push run is never cancelled by a
-  later `edited`, `labeled`, or `unlabeled` run (its own concurrency group).
+  label only when its last `labeled` timeline event is later than the head
+  commit's arrival on the pull request
+  (`flowchecks.risk_gate.approval_is_fresh`). The arrival is a time GitHub sets,
+  never a commit date: the earliest GitHub Actions check suite of the head
+  commit for this pull request (created when the push arrives; a suite on
+  another branch does not count), or a later `head_ref_force_pushed` time. When
+  that cannot be read the label does not count. The gate reads the timeline and
+  the check suites with `pull-requests: read` and `checks: read`, and runs
+  nothing from the head. The removal at the push stays as the exact signal, and
+  a push run is never cancelled by a later `edited`, `labeled`, or `unlabeled`
+  run (its own concurrency group).
 - Which paths are High: the list of development-flow.md, section 2.1, as
   `.github/risk-paths.toml` maps it, including each module's `schemas.py`,
   `api.py`, and `events.py`, all of `app/platform/`, `app/main.py`,

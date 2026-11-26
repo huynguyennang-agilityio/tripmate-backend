@@ -126,35 +126,79 @@ def _as_dict(value: object) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
-def approval_is_fresh(events: Iterable[dict[str, object]], label: str = APPROVAL_LABEL) -> bool:
-    """Whether `label` was last added after the newest commit reached the pull request.
+def check_suites_of(text: str) -> list[dict[str, object]]:
+    """Check suites from `gh api --paginate [--slurp]` of `commits/{sha}/check-suites` (pages)."""
+    suites: list[dict[str, object]] = []
+    for page in _timeline_events(text):
+        found = page.get("check_suites")
+        if isinstance(found, list):
+            suites.extend(i for i in found if isinstance(i, dict))
+    return suites
+
+
+def head_arrival(
+    events: Iterable[dict[str, object]],
+    check_suites: Iterable[dict[str, object]],
+    pr_number: int,
+    head_ref: str,
+    app_slug: str = "github-actions",
+) -> datetime | None:
+    """When the head commit reached the pull request, by times GitHub sets (never commit dates).
+
+    The earliest check suite of the head commit, made by `app_slug`, for this pull request (it
+    lists the pull request, or its branch is the pull request's head branch) is created when the
+    push arrives; a suite of the same commit on another branch is not counted, since the commit
+    may have been pushed there long before. A force push of the head branch (`head_ref_force_pushed`
+    timeline events, by `created_at`) also moves the arrival to its time, whichever is later.
+    None when no such suite can be read: the caller treats that as not fresh.
+    """
+    arrivals: list[datetime] = []
+    for suite in check_suites:
+        if _as_dict(suite.get("app")).get("slug") != app_slug:
+            continue
+        pulls = suite.get("pull_requests")
+        listed = isinstance(pulls, list) and any(
+            _as_dict(p).get("number") == pr_number for p in pulls
+        )
+        if listed or suite.get("head_branch") == head_ref:
+            moment = _time(suite.get("created_at"))
+            if moment is not None:
+                arrivals.append(moment)
+    if not arrivals:
+        return None
+    arrival = min(arrivals)
+    for event in events:
+        if event.get("event") == "head_ref_force_pushed":
+            pushed = _time(event.get("created_at"))
+            if pushed is None:
+                return None
+            arrival = max(arrival, pushed)
+    return arrival
+
+
+def approval_is_fresh(
+    events: Iterable[dict[str, object]],
+    check_suites: Iterable[dict[str, object]],
+    pr_number: int,
+    head_ref: str,
+    label: str = APPROVAL_LABEL,
+) -> bool:
+    """Whether `label` was last added after the head commit reached the pull request.
 
     `events` are the pull request's timeline events (`GET /repos/{repo}/issues/{n}/timeline`) in
-    time order. The label counts only when its last `labeled` event (an `unlabeled` event clears
-    it) is later than every `committed` event (its newest author or committer date) and every
-    `head_ref_force_pushed` event (its `created_at`, the push time). A label never added, or
-    removed, is not fresh. Times are ISO 8601 strings in UTC (`2026-11-26T10:00:00Z`).
+    time order; the label counts when its last `labeled` event (an `unlabeled` event clears it) is
+    later than `head_arrival`. A label never added or removed, an arrival that cannot be read, or
+    an unreadable time is not fresh. Commit dates are never used: a commit made before the label
+    but pushed after it must not look old, and a future-dated one must not block approval.
     """
+    event_list = list(events)
     labeled_at: datetime | None = None
-    newest_commit: datetime | None = None
-    for event in events:
+    for event in event_list:
         kind = event.get("event")
-        stamps: list[object] = []
         if kind in ("labeled", "unlabeled") and _as_dict(event.get("label")).get("name") == label:
             labeled_at = _time(event.get("created_at")) if kind == "labeled" else None
-        elif kind == "committed":
-            stamps = [
-                _as_dict(event.get("committer")).get("date"),
-                _as_dict(event.get("author")).get("date"),
-            ]
-        elif kind == "head_ref_force_pushed":
-            stamps = [event.get("created_at")]
-        for stamp in map(_time, stamps):
-            if stamp is not None and (newest_commit is None or stamp > newest_commit):
-                newest_commit = stamp
-    if labeled_at is None:
-        return False
-    return newest_commit is None or labeled_at > newest_commit
+    arrival = head_arrival(event_list, check_suites, pr_number, head_ref)
+    return labeled_at is not None and arrival is not None and labeled_at > arrival
 
 
 def _time(value: object) -> datetime | None:
@@ -189,17 +233,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--timeline-file",
         help=f"the pull request's timeline events (JSON); `{APPROVAL_LABEL}` counts only when "
-        "it was last added after the newest commit reached the pull request",
+        "it was last added after the head commit reached the pull request",
     )
+    parser.add_argument("--check-suites-file", help="check suites of the head commit (JSON)")
+    parser.add_argument("--pr-number", type=int, help="the pull request's number")
+    parser.add_argument("--head-ref", help="the pull request's head branch")
     args = parser.parse_args(argv)
+    if args.timeline_file and not (args.check_suites_file and args.pr_number and args.head_ref):
+        parser.error("--timeline-file needs --check-suites-file, --pr-number, and --head-ref")
     labels: list[str] = list(args.label)
     if args.timeline_file and APPROVAL_LABEL in labels:
-        text = Path(args.timeline_file).read_text(encoding="utf-8")
-        if not approval_is_fresh(_timeline_events(text)):
+        events = _timeline_events(Path(args.timeline_file).read_text(encoding="utf-8"))
+        suites = check_suites_of(Path(args.check_suites_file).read_text(encoding="utf-8"))
+        if not approval_is_fresh(events, suites, args.pr_number, args.head_ref):
             labels.remove(APPROVAL_LABEL)
             print(
-                f"Risk gate: `{APPROVAL_LABEL}` was not added after the newest commit; "
-                "it does not count.",
+                f"Risk gate: `{APPROVAL_LABEL}` was not added after the head commit reached the "
+                "pull request (or that time cannot be read); it does not count.",
                 file=sys.stderr,
             )
     rules = load_rules(resolve_rules_path(args.rules, args.repo), args.repo)

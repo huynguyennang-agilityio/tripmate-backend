@@ -30,6 +30,7 @@ def check(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
     """
     locked: dict[str, str] = {}  # test ID -> fingerprint at the last test commit that set it
     support: dict[str, str | None] = {}  # support file -> its text at the last test commit
+    conftests: dict[str, str | None] = {}  # any conftest.py a test commit touched -> its text
     broken: set[str] = set()
     for commit in _git.commits(repo, base, head):
         parent = f"{commit.sha}^"
@@ -42,9 +43,12 @@ def check(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
                     f"{', '.join(outside)} outside tests/"
                 )
         for path in paths:
-            if not commit.is_test and PurePosixPath(path).name == "conftest.py":
-                broken.add(path)  # a hook can deselect or skip any test, at any depth
-                continue
+            if PurePosixPath(path).name == "conftest.py":
+                if commit.is_test:
+                    conftests[path] = _git.show_file(repo, commit.sha, path)
+                else:
+                    broken.add(path)  # a hook can deselect or skip any test, at any depth
+                    continue
             if _git.is_support_file(path):
                 text = _git.show_file(repo, commit.sha, path)
                 if commit.is_test:
@@ -68,18 +72,32 @@ def check(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
                 test = _testsource.make_id(path, name)
                 if test in locked and after.functions.get(name) != locked[test]:
                     broken.add(test)
-    broken |= _broken_at_head(repo, head, locked, support)
+    broken |= _broken_at_head(repo, base, head, locked, support, conftests)
     return sorted(broken)
 
 
 def _broken_at_head(
     repo: str | os.PathLike[str],
+    base: str,
     head: str,
     locked: dict[str, str],
     support: dict[str, str | None],
+    conftests: dict[str, str | None],
 ) -> set[str]:
-    """Locked tests and files that differ at `head` from their last locked state."""
+    """Locked tests and files that differ at `head` from their last locked state.
+
+    Every `conftest.py` that differs between the merge base and `head` is checked too: its text at
+    `head` must be the one of the last test commit that touched it, or the merge base's when none
+    did, so a merge commit (which the walk skips) cannot change one.
+    """
     broken: set[str] = set()
+    start = _git.merge_base(repo, base, head)
+    for path in _git.changed_files(repo, start, head):
+        if PurePosixPath(path).name != "conftest.py":
+            continue
+        expected = conftests[path] if path in conftests else _git.show_file(repo, start, path)
+        if _git.show_file(repo, head, path) != expected:
+            broken.add(path)
     parsed: dict[str, _testsource.ModuleTests] = {}
     for test, fingerprint in locked.items():
         path, _, name = test.partition("::")
