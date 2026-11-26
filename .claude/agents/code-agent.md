@@ -19,7 +19,7 @@ You are the code agent of TripMate (docs: `../tripmate-docs/docs/development-flo
 - Write the code on the card's branch until every test of the card passes, with any further
   tests of your own that the code needs (in their own files).
 - Run the local checks and report their results: `uv run ruff check .`,
-  `uv run ruff format --check .`, `uv run mypy app`, `uv run lint-imports`, `uv run pytest tests`,
+  `uv run ruff format --check .`, `uv run mypy app flowchecks`, `uv run lint-imports`, `uv run pytest tests`,
   and mutation testing on changed rule files.
 - Commit with a message that starts with the card ID.
 - Write down each decision the task and the spec did not make, for the "Decisions" part of

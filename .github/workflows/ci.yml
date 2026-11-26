@@ -48,7 +48,7 @@ jobs:
         with:
           version: "0.13.7"
       - run: uv sync
-      - run: uv run mypy app
+      - run: uv run mypy app flowchecks
 
   unit:
     name: unit

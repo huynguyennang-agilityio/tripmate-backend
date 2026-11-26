@@ -10,15 +10,21 @@
 #   mutation       a changed rule file has a surviving mutant the PR description does not list
 #                  (backend only: `run-mutation`; skipped, and so green, when it is off)
 #   risk-gate      a High path changed and the PR has no `human-approved` label
+#                  (see `run-risk-gate`: the backend runs the gate from risk-gate-check.yml)
 #
 # Where the checks' code comes from. The code is the `flowchecks/` folder of
 # `flowchecks-repository`, checked out at `flowchecks-ref` into `.flowchecks-src/`. `github.workflow_sha`
 # cannot be used for this: in a reusable workflow it names the caller's commit, not this file's.
 # A caller in another repository must therefore pin the ref (a tag or a full commit SHA of
 # tripmate-backend, so the checks only change when the caller changes the pin). The backend's own
-# caller passes the pull request's head, so a change to the checks is checked by itself; that
-# change is High (`flowchecks/**`) and needs `human-approved`. The repository is public, so the
-# default token is enough to read it.
+# caller passes the pull request's BASE commit, so the checks that judge a pull request are the
+# ones already on `main`: a pull request cannot weaken the check that reviews it. The repository
+# is public, so the default token is enough to read it.
+#
+# A `pull_request` run uses the workflow files of the pull request itself, so a pull request can
+# edit this file or the caller. That is why the risk gate, which makes those edits need
+# `human-approved`, runs from risk-gate-check.yml on `pull_request_target` (a workflow of the base
+# branch) and not from here.
 #
 # Not usable from a `pull_request_target` or `push` workflow: the jobs read the pull request's
 # base, head, labels, and description from the `pull_request` event.
@@ -47,6 +53,10 @@ on:
         description: Start PostgreSQL 16 and Redis 7 for failing-first, with the `_test` database and TEST_* settings of ci.yml
         type: boolean
         default: false
+      run-risk-gate:
+        description: Run the risk-gate job here. Turn it off when the repository calls risk-gate-check.yml from a pull_request_target workflow instead, which the pull request cannot change (the backend does).
+        type: boolean
+        default: true
       flowchecks-ref:
         description: Tag or full commit SHA of flowchecks-repository to run the checks from
         type: string
@@ -229,6 +239,9 @@ jobs:
 
   risk-gate:
     name: risk-gate
+    # Skipped when off. A skipped job counts as passed, so a repository that turns it off must
+    # require the check of risk-gate-check.yml and never this one.
+    if: ${{ inputs.run-risk-gate }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -70,8 +70,8 @@ every push to `main`. Each job is a check that is required on `main`
 | `secrets` | gitleaks over the commits of the change and the checked-out files |
 | `image` | `docker build` of the `Dockerfile`, no push |
 
-The four flow checks are in `.github/workflows/flow.yml`, a call of the
-reusable `flow-checks.yml` (section "Flow checks"). Checks of later cards
+The four flow checks are in `.github/workflows/flow.yml` (a call of the
+reusable `flow-checks.yml`) and `risk-gate.yml` (section "Flow checks"). Checks of later cards
 join these files in their own cards. Third-party
 actions are pinned to a full commit SHA with the version in a comment.
 
@@ -81,10 +81,18 @@ actions are pinned to a full commit SHA with the version in a comment.
 section 2.3, on every pull request to `main` (EPIC-11 spec, section 2.12).
 The code is the `flowchecks/` package (`failing_first`, `test_lock`,
 `mutation`, `risk_gate`), offered to the other code repositories as the
-reusable workflow `.github/workflows/flow-checks.yml`. All four are required
-on `main`; because the job of `flow.yml` is called `flow`, the checks are
-named `flow / failing-first`, `flow / test-lock`, `flow / mutation`, and
-`flow / risk-gate`.
+reusable workflow `.github/workflows/flow-checks.yml`.
+
+The checks that judge a pull request are never the pull request's own:
+`flow.yml` (on `pull_request`, so it can run the head's tests) runs the
+`flowchecks` code of the base commit, and the risk gate is its own workflow,
+`.github/workflows/risk-gate.yml` on `pull_request_target`, a file the pull
+request cannot edit. It checks out only the base, fetches the head's objects,
+and diffs them; it never runs anything from the head (the header of
+`risk-gate-check.yml` explains why that is safe). The four required checks on
+`main` are exactly `flow / failing-first`, `flow / test-lock`,
+`flow / mutation`, and `gate / risk-gate`. `flow / risk-gate` exists but is
+always skipped here; never require it.
 
 | Check | Fails when |
 |-------|------------|
@@ -105,11 +113,17 @@ named `flow / failing-first`, `flow / test-lock`, `flow / mutation`, and
   `## Surviving mutants`, one line each: `- <mutant name>: <reason>` (the
   name as mutmut prints it, for example `app.money.splits.x_allocate__mutmut_3`).
   Editing the description runs the check again.
+- Known limit: the lock covers test functions and the `test*` methods of
+  `Test*` classes (`path::TestX::test_y`), with the class's decorators,
+  bases, and attributes. Helper files, `conftest.py`, fixtures, and helper
+  methods stay unlocked.
 - Run one check by hand from the repository root, for example
   `uv run python -m flowchecks.risk_gate --rules .github/risk-paths.toml --repo . --base origin/main --head HEAD`.
 - Other repositories call `flow-checks.yml` with their own path list and test
   command, and pin `flowchecks-ref` to a tag or commit of this repository
-  (the header of the workflow explains why).
+  (the header of the workflow explains why). They should run the risk gate as
+  the backend does: `run-risk-gate: false` on the `pull_request` call, and a
+  `pull_request_target` workflow that calls `risk-gate-check.yml`.
 
 ## Settings
 

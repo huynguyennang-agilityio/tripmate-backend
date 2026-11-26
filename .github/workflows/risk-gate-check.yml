@@ -1,0 +1,98 @@
+# The risk gate (development-flow.md, section 2.1) as its own reusable workflow, to be called from
+# a `pull_request_target` workflow (see `risk-gate.yml`). One job, `risk-gate`.
+#
+# Why `pull_request_target`, and why it is safe here. A `pull_request` run takes its workflow
+# files from the pull request, so a pull request could edit the gate (or the checks' code) and
+# pass without `human-approved`. A `pull_request_target` run takes its workflow files, and a local
+# `./.github/workflows/...` reusable workflow, from the base branch, which the pull request cannot
+# change. The usual danger of that event is running the pull request's code with a token or
+# secrets. Nothing of the head is run here: the job checks out the BASE commit only, fetches the
+# head commit's objects with `git fetch` (never `checkout`), and lists the changed paths with
+# `git diff`. The code that runs is the base checkout's workflow and the `flowchecks` package at
+# `flowchecks-ref` (the caller passes the base commit). The path list is read from the base
+# checkout too. There are no secrets, and `permissions: contents: read`. The pull request's fields
+# reach the scripts only through `env:`.
+#
+# The check is shown as `<caller job> / risk-gate`; for the backend, `gate / risk-gate`.
+name: Risk gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      rules-file:
+        description: The caller's path list (TOML), relative to its repository root, read at the base commit
+        type: string
+        required: true
+      flowchecks-ref:
+        description: Tag or full commit SHA of flowchecks-repository to run the gate from
+        type: string
+        required: true
+      flowchecks-repository:
+        description: Repository that holds the `flowchecks/` package
+        type: string
+        default: huynguyennang-agilityio/tripmate-backend
+
+permissions:
+  contents: read
+
+jobs:
+  risk-gate:
+    name: risk-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Needs a pull request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request_target" ] && [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "::error::The risk gate runs on pull request events only, not $EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The base commit, never the head. The token stays in the git config so that the
+          # fetch below works in a private repository; nothing from the head is executed.
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.flowchecks-repository }}
+          ref: ${{ inputs.flowchecks-ref }}
+          path: .flowchecks-src
+          sparse-checkout: flowchecks
+          persist-credentials: false
+      - name: Keep the checks' code out of the caller's tree
+        run: echo "/.flowchecks-src/" >> .git/info/exclude
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - name: Fetch the head commit's objects (no checkout)
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin "$HEAD_SHA" \
+            || git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          git cat-file -e "${HEAD_SHA}^{commit}"
+      - name: Risk gate
+        # The labels come from the event payload (no token needed) as data in an environment
+        # variable. A re-run of this job sees the labels of the original event, so the caller
+        # runs again on `labeled` and `unlabeled` instead.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RULES_FILE: ${{ inputs.rules-file }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          label_args=()
+          while IFS= read -r label; do
+            if [ -n "$label" ]; then
+              label_args+=(--label "$label")
+            fi
+          done < <(printf '%s' "$LABELS_JSON" | jq -r '.[]')
+          cd .flowchecks-src
+          uv run --no-project --python 3.13 python -m flowchecks.risk_gate \
+            --rules "$RULES_FILE" --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" "${label_args[@]}"

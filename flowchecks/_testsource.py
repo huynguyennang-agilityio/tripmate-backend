@@ -1,4 +1,4 @@
-"""What the checks read from a test file: its module-level test functions and skip markers."""
+"""What the checks read from a test file: its test functions, the methods of its `Test*` classes, and skip markers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ _SKIP_CALLS = frozenset({"skip", "importorskip"})
 
 @dataclass(frozen=True)
 class ModuleTests:
-    # function name -> a fingerprint of its whole definition (body and decorators)
+    # `test_x` or `TestX::test_y` -> a fingerprint of its whole definition (body and decorators)
     functions: dict[str, str] = field(default_factory=dict)
     # the module as a whole is skipped (`pytestmark`, `pytest.skip(allow_module_level=True)`)
     skipped: bool = False
@@ -50,6 +50,36 @@ def parse(source: str | None) -> ModuleTests:
         if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
             if stmt.name.startswith("test"):
                 functions[stmt.name] = ast.dump(stmt, include_attributes=False)
-        elif not isinstance(stmt, ast.ClassDef) and _is_module_skip(stmt):
+        elif isinstance(stmt, ast.ClassDef):
+            _read_class(stmt, "", functions)
+        elif _is_module_skip(stmt):
             skipped = True
     return ModuleTests(functions=functions, skipped=skipped)
+
+
+def _read_class(node: ast.ClassDef, prefix: str, functions: dict[str, str]) -> None:
+    """`test*` methods of a `Test*` class, named `TestX::test_y` as pytest's node ID.
+
+    A method's fingerprint holds its own definition and the class's context (decorators, bases,
+    and attributes such as `pytestmark`), so a skip on the class breaks every method in it.
+    Helper methods and fixtures are not part of the context and stay unlocked.
+    """
+    if not node.name.startswith("Test"):
+        return
+    name = f"{prefix}{node.name}"
+    methods = (ast.FunctionDef, ast.AsyncFunctionDef)
+    context = ast.dump(
+        ast.Module(
+            body=[
+                *[s for s in node.body if not isinstance(s, (*methods, ast.ClassDef))],
+                ast.Expr(ast.Tuple(elts=[*node.decorator_list, *node.bases], ctx=ast.Load())),
+            ],
+            type_ignores=[],
+        )
+    )
+    for stmt in node.body:
+        if isinstance(stmt, methods) and stmt.name.startswith("test"):
+            own = ast.dump(stmt, include_attributes=False)
+            functions[f"{name}::{stmt.name}"] = f"{context}|{own}"
+        elif isinstance(stmt, ast.ClassDef):
+            _read_class(stmt, f"{name}::", functions)

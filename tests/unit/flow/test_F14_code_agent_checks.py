@@ -291,12 +291,14 @@ def _run_scripts(text: str) -> list[str]:
     return scripts
 
 
-@pytest.mark.parametrize("name", ["flow-checks.yml", "flow.yml"])
+@pytest.mark.parametrize(
+    "name", ["flow-checks.yml", "flow.yml", "risk-gate-check.yml", "risk-gate.yml"]
+)
 def test_no_run_script_of_a_flow_workflow_interpolates_an_expression(name: str) -> None:
     text = (WORKFLOWS / name).read_text(encoding="utf-8")
     scripts = _run_scripts(text)
 
-    assert scripts or name == "flow.yml", "the scan found no run step"
+    assert scripts or name in ("flow.yml", "risk-gate.yml"), "the scan found no run step"
     assert [s for s in scripts if "${{" in s] == []
 
 
@@ -310,3 +312,33 @@ def test_the_reusable_workflow_has_the_four_jobs_least_privilege_and_pinned_acti
     assert text.count("fetch-depth: 0") == 4
     for used in re.findall(r"uses:\s*(\S+)", text):
         assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", used), used
+
+
+def test_the_risk_gate_runs_from_the_base_and_never_checks_out_or_runs_the_head() -> None:
+    caller = (WORKFLOWS / "risk-gate.yml").read_text(encoding="utf-8")
+    reusable = (WORKFLOWS / "risk-gate-check.yml").read_text(encoding="utf-8")
+
+    assert "pull_request_target:" in caller
+    assert "uses: ./.github/workflows/risk-gate-check.yml" in caller
+    assert "flowchecks-ref: ${{ github.event.pull_request.base.sha }}" in caller
+    assert re.search(r"^permissions:\n  contents: read$", reusable, re.MULTILINE)
+    for used in re.findall(r"uses:\s*(\S+)", reusable):
+        assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", used), used
+    # Every checkout names the base commit or the checks' own repository, never the head.
+    refs = re.findall(r"^\s+ref:\s*(.+)$", reusable, re.MULTILINE)
+    assert refs == [
+        "${{ github.event.pull_request.base.sha }}",
+        "${{ inputs.flowchecks-ref }}",
+    ]
+    assert "git checkout" not in reusable
+    assert "git fetch" in reusable
+
+
+def test_the_backend_runs_its_checks_from_the_base_and_leaves_the_gate_to_the_target_workflow() -> (
+    None
+):
+    caller = (WORKFLOWS / "flow.yml").read_text(encoding="utf-8")
+
+    assert "flowchecks-ref: ${{ github.event.pull_request.base.sha }}" in caller
+    assert "run-risk-gate: false" in caller
+    assert "pull_request_target" not in caller.replace("pull_request_target`", "")
