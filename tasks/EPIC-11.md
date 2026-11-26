@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.4
+**Version:** 1.5
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -266,6 +266,9 @@ None.
 - A P0 ID in scope with no test, or whose only test is skipped, fails CI and names the ID.
 - A test named with an ID that is not in the list fails CI and names the test.
 - IDs of epics not in scope yet are not asked for.
+- A skipped test is read from the test run: the `unit` and `integration` jobs write JUnit XML, and the report job reads both files, so the same script serves any repository whose test runner writes JUnit XML.
+- A requirement ID in a test name has the form of prd.md, such as `AUTH_01` or `EXP_04` (letters, an underscore, two digits). Card case IDs such as `F1_4`, and tests with no ID, are not checked.
+- The check is a new required CI job, `requirements`. The report is the job summary on the run page, plus `requirements-report.md` and `requirements-report.json` kept as an artifact of the run.
 
 **Leaves out**
 
@@ -751,3 +754,4 @@ None.
 | 1.2 | 2026-11-26 | F14 scope: where a pull request lists a surviving mutant, a `## Surviving mutants` section of its description, as the product owner decided. |
 | 1.3 | 2026-11-26 | F14 scope, as the product owner decided after review round 1: the contract, access, and platform files are High on the backend path list; failing first checks each test commit; a push removes `human-approved`. |
 | 1.4 | 2026-11-26 | F14 scope, as the product owner decided after review round 2: the label counts only when added after the newest commit; any `conftest.py` change outside a test commit breaks the test lock. |
+| 1.5 | 2026-11-26 | F13 scope, as the product owner decided before the tests: skipped tests are read from the JUnit XML of the test run; only IDs of the prd.md form are checked; the check is the CI job `requirements`, with the report in the job summary and as an artifact. |
