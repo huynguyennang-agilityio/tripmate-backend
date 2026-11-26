@@ -14,6 +14,14 @@
 # `pull-requests: write` runs nothing from the pull request). The pull request's fields
 # reach the scripts only through `env:`.
 #
+# An approval is fresh only when added after the newest commit. On every event the gate reads the
+# timeline and counts `human-approved` only when its last `labeled` event is later than the newest
+# `committed` (its author or committer date) or `head_ref_force_pushed` (its push time) event.
+# That alone is not enough: a commit's dates come from the author's machine, not from the push, so
+# a slow clock or a backdated commit looks older than it is. The removal below is the exact
+# signal (it runs at the push), so both stay: the freshness check covers a removal that never ran
+# or failed, the removal covers the dates. The caller keeps the push run from being cancelled.
+#
 # An approval ends with a push. On `synchronize`, when the pull request carries `human-approved`,
 # the job `revoke-approval` removes the label (the only job with `pull-requests: write`; it
 # checks out and runs nothing, and only calls the REST API with the token) and the gate then
@@ -60,8 +68,14 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh api --method DELETE \
-            "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/human-approved" --silent
+          # A label that is already gone (404) is the state we want.
+          if ! out="$(gh api --method DELETE \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/human-approved" 2>&1)"; then
+            case "$out" in
+              *"HTTP 404"*) echo "The label was already removed." ;;
+              *) echo "$out"; exit 1 ;;
+            esac
+          fi
           echo "A push removed human-approved; the product owner adds it again after reading the new commits."
 
   risk-gate:
@@ -71,6 +85,10 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # Only to read the pull request's timeline (when the label was added, when commits arrived).
+      pull-requests: read
     steps:
       - name: The approval must have been removed when it had to be
         env:
@@ -115,6 +133,17 @@ jobs:
           git fetch --no-tags origin "$HEAD_SHA" \
             || git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
           git cat-file -e "${HEAD_SHA}^{commit}"
+      - name: Read the timeline of the pull request
+        # On every event, `human-approved` counts only when it was last added after the newest
+        # commit reached the pull request (flowchecks.risk_gate.approval_is_fresh). Read-only.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" \
+            > "$RUNNER_TEMP/timeline.json"
       - name: Risk gate
         # The labels come from the event payload (no token needed) as data in an environment
         # variable. A re-run of this job sees the labels of the original event, so the caller
@@ -138,4 +167,5 @@ jobs:
           cd .flowchecks-src
           uv run --no-project --python 3.13 python -m flowchecks.risk_gate \
             --rules "$RULES_FILE" --repo "$GITHUB_WORKSPACE" \
-            --base "$BASE_SHA" --head "$HEAD_SHA" "${label_args[@]}"
+            --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --timeline-file "$RUNNER_TEMP/timeline.json" "${label_args[@]}"

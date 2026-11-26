@@ -1,10 +1,12 @@
 """Failing first: a new test of a test commit must fail before the code exists.
 
 Each test commit of `base..head` is checked out, in order, and the tests that commit adds (IDs
-its parent's tree lacks) are run there; each must fail (pytest exit 1) or error (exit 2, or exit 4 when the test's own module fails to import). A test
-commit that only changes existing tests, such as a correction after the code, adds nothing and is
-not asked to fail. Any other exit (pytest 3, 4, 5, a signal, a timeout) means the run itself broke
-and the check fails with the output, rather than counting as a failure of the test.
+its parent's tree lacks) are run there; each must fail (pytest exit 1) or error (exit 2, or exit 4
+when the output has `ERROR collecting <the test's own file>`, which is how pytest answers a test ID
+whose module fails to import). A test commit that only changes existing tests, such as a correction
+after the code, adds nothing and is not asked to fail. Any other exit (pytest 3 or 5, exit 4 without
+that line, as for a crashing `conftest.py`, a signal, a timeout) means the run itself broke and the
+check fails with the output, rather than counting as a failure of the test.
 The check returns the added tests that passed.
 """
 

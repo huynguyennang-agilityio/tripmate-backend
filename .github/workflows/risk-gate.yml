@@ -16,7 +16,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # A push has its own group, so a later `edited`, `labeled`, or `unlabeled` run never cancels the
+  # run that removes `human-approved`; a newer push still replaces an older one.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'synchronize' && 'push' || 'other' }}
   cancel-in-progress: true
 
 jobs:

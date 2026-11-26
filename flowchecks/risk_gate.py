@@ -9,11 +9,13 @@ Built in, whatever the file says: the path list itself, `.github/workflows/**`, 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tomllib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from flowchecks import _git
@@ -102,6 +104,69 @@ def check(changed: Iterable[str], rules: Iterable[Rule], labels: Iterable[str]) 
     return sorted({p for p in changed if level_of(p, rule_list) == "High"})
 
 
+def _timeline_events(text: str) -> list[dict[str, object]]:
+    """Events from `gh api --paginate` (arrays one after another) or `--slurp` (an array of arrays)."""
+    decoder = json.JSONDecoder()
+    events: list[dict[str, object]] = []
+    index = 0
+    while index < len(text):
+        if text[index].isspace():
+            index += 1
+            continue
+        value, index = decoder.raw_decode(text, index)
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            events.extend(
+                i for i in (item if isinstance(item, list) else [item]) if isinstance(i, dict)
+            )
+    return events
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def approval_is_fresh(events: Iterable[dict[str, object]], label: str = APPROVAL_LABEL) -> bool:
+    """Whether `label` was last added after the newest commit reached the pull request.
+
+    `events` are the pull request's timeline events (`GET /repos/{repo}/issues/{n}/timeline`) in
+    time order. The label counts only when its last `labeled` event (an `unlabeled` event clears
+    it) is later than every `committed` event (its newest author or committer date) and every
+    `head_ref_force_pushed` event (its `created_at`, the push time). A label never added, or
+    removed, is not fresh. Times are ISO 8601 strings in UTC (`2026-11-26T10:00:00Z`).
+    """
+    labeled_at: datetime | None = None
+    newest_commit: datetime | None = None
+    for event in events:
+        kind = event.get("event")
+        stamps: list[object] = []
+        if kind in ("labeled", "unlabeled") and _as_dict(event.get("label")).get("name") == label:
+            labeled_at = _time(event.get("created_at")) if kind == "labeled" else None
+        elif kind == "committed":
+            stamps = [
+                _as_dict(event.get("committer")).get("date"),
+                _as_dict(event.get("author")).get("date"),
+            ]
+        elif kind == "head_ref_force_pushed":
+            stamps = [event.get("created_at")]
+        for stamp in map(_time, stamps):
+            if stamp is not None and (newest_commit is None or stamp > newest_commit):
+                newest_commit = stamp
+    if labeled_at is None:
+        return False
+    return newest_commit is None or labeled_at > newest_commit
+
+
+def _time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
 def changed_paths(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
     """The files that differ between `base` and `head` (`git diff --name-only base...head`)."""
     out = _git.git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base}...{head}")
@@ -121,9 +186,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--label", action="append", default=[], help="a label of the pull request")
+    parser.add_argument(
+        "--timeline-file",
+        help=f"the pull request's timeline events (JSON); `{APPROVAL_LABEL}` counts only when "
+        "it was last added after the newest commit reached the pull request",
+    )
     args = parser.parse_args(argv)
+    labels: list[str] = list(args.label)
+    if args.timeline_file and APPROVAL_LABEL in labels:
+        text = Path(args.timeline_file).read_text(encoding="utf-8")
+        if not approval_is_fresh(_timeline_events(text)):
+            labels.remove(APPROVAL_LABEL)
+            print(
+                f"Risk gate: `{APPROVAL_LABEL}` was not added after the newest commit; "
+                "it does not count.",
+                file=sys.stderr,
+            )
     rules = load_rules(resolve_rules_path(args.rules, args.repo), args.repo)
-    needing = check(changed_paths(args.repo, args.base, args.head), rules, args.label)
+    needing = check(changed_paths(args.repo, args.base, args.head), rules, labels)
     if needing:
         print(
             f"Risk gate: these changed paths are High and the pull request has no "

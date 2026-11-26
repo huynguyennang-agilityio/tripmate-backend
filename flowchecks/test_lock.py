@@ -7,7 +7,8 @@ the class, or the whole file) breaks it. A new test function added to a locked f
 commit is not locked. Every file under `tests/` that is not a test file (`conftest.py`, helpers,
 data) is locked the same way once a test commit adds or changes it. After the walk, the head is
 compared with the last locked state too, so a merge or any other path cannot slip a change in.
-A test commit that changes a path outside `tests/` is itself a failure (the trailer can be forged).
+Any `conftest.py`, at any depth, that a commit without the trailer adds, changes, or deletes
+breaks the lock, locked or not. A test commit that changes a path outside `tests/` is itself a failure (the trailer can be forged).
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import PurePosixPath
 
 from flowchecks import _git, _testsource
 
@@ -40,6 +42,9 @@ def check(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
                     f"{', '.join(outside)} outside tests/"
                 )
         for path in paths:
+            if not commit.is_test and PurePosixPath(path).name == "conftest.py":
+                broken.add(path)  # a hook can deselect or skip any test, at any depth
+                continue
             if _git.is_support_file(path):
                 text = _git.show_file(repo, commit.sha, path)
                 if commit.is_test:
