@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.5
+**Version:** 1.6
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -28,6 +28,7 @@ Test case levels are the letters of [test-strategy.md](https://github.com/huyngu
 | [F10](#f10) | Logs, traces, metrics, and error reporting | M | High | F4 | 4 |
 | [F9](#f9) | Worker, scheduler, and cleanup | M | High | F7, F8 | 5 |
 | [F11](#f11) | Local stack, image, and production on Render | M | High | F9, F10 | 5 |
+| [F15](#f15) | Failing first for tests in any language | S | High | F14 | 3 |
 
 ## F1
 
@@ -690,6 +691,54 @@ None.
 
 None.
 
+## F15
+
+**F15 Failing first for tests in any language**
+
+**Facts**
+
+| Fact | Value |
+|------|-------|
+| Epic | EPIC-11 |
+| Repository | `tripmate-backend` |
+| Machine | Mac 1, wave 3 |
+| Size | S |
+| Risk | High: it changes a check of development-flow.md, section 2.3 |
+| Depends on | F14 |
+| Requirements | Development flow |
+| Spec sections | 2.12 (Failing first) |
+
+**Scope**
+
+- The reusable workflow takes the caller's test file pattern, for example `tests/**/*.test.js`; the backend keeps `test_*.py`.
+- A test file of another language that a test commit adds is run with the caller's test command at that commit and must fail; the check names the file when it passes.
+- A test commit that only changes an existing test file is not asked to fail, as for Python.
+- Python tests keep the check per test function of F14.
+- A run that cannot start, or finds no test in the file, is an error of the run and fails the check.
+
+**Leaves out**
+
+- Moving the pin in the other repositories: each repository's next card that touches its flow checks (CT2, WF2, MF2, DF1).
+- Mutation testing in other languages.
+
+**Done when**
+
+2.12: failing first checks the added test files of any language with the caller's test command and file pattern; Python is unchanged
+
+**Test cases**
+
+| Case | Kind | Given | Expected | Level |
+|------|------|-------|----------|-------|
+| F15-1 | Error | A test commit adds a JavaScript test file that passes at that commit | The check fails and names the file | U |
+| F15-2 | Main | A test commit adds a JavaScript test file that fails at that commit | The check passes | U |
+| F15-3 | Edge | A test commit only changes an existing JavaScript test file | It is not asked to fail | U |
+| F15-4 | Edge | A Python test function added by a test commit | It is checked per function, as in F14 | U |
+| F15-5 | Error | The test command cannot start, or the file holds no test | The check fails as an error of the run and names the file | U |
+
+**Manual checks**
+
+None.
+
 ## F11
 
 **F11 Local stack, image, and production on Render**
@@ -755,3 +804,4 @@ None.
 | 1.3 | 2026-11-26 | F14 scope, as the product owner decided after review round 1: the contract, access, and platform files are High on the backend path list; failing first checks each test commit; a push removes `human-approved`. |
 | 1.4 | 2026-11-26 | F14 scope, as the product owner decided after review round 2: the label counts only when added after the newest commit; any `conftest.py` change outside a test commit breaks the test lock. |
 | 1.5 | 2026-11-26 | F13 scope, as the product owner decided before the tests: skipped tests are read from the JUnit XML of the test run; only IDs of the prd.md form are checked; the check is the CI job `requirements`, with the report in the job summary and as an artifact. |
+| 1.6 | 2026-11-26 | New task F15, as the product owner decided during CT1: failing first reads only Python test files, so it learns the test files of any language. |
