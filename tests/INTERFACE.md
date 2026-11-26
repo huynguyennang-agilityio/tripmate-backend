@@ -509,8 +509,10 @@ repository's own test results.
   for (F13-3). The first card of each epic adds that epic's IDs;
   EPIC-11 has none, so the repository's file holds only its header
   comment.
-- A line that is not an ID after comments are removed is an error of the
-  file (the code decides how it reports it; no test relies on it).
+- A line that is not an ID after comments are removed (for example
+  `auth_01`) is an error of the file: the command exits with `2` and
+  names the line's number (as `line 3` or `<file>:3`; lines count from
+  1, comment and empty lines included) (F13-3).
 
 ### F13: Tests read from JUnit XML
 
@@ -522,7 +524,9 @@ repository's own test results.
   `tests.integration.money.test_splits::test_EXP_04_remainder_goes_by_join_order`.
 - A testcase with a `<skipped>` child is not a test (F13-5): it counts
   for no ID and is not in the report's lists of tests. (pytest also
-  writes an expected failure, `xfail`, as `<skipped>`.)
+  writes an expected failure, `xfail`, as `<skipped>`.) One exception:
+  a skipped testcase named with an ID that is not in the file is still
+  an unknown test (F13-4).
 - A testcase with a `<failure>` or `<error>` child is still a test of
   its ID: it ran, and the `unit` or `integration` job already fails on
   it (F13-5).
@@ -530,7 +534,11 @@ repository's own test results.
   with any `[parameters]` suffix): `test_`, then capital letters, an
   underscore, two digits, then `_`, `[`, or the end of the name.
   `test_AUTH_01_password_is_hashed` gives `AUTH-01`. Only an ID right
-  after `test_` is read. A card case ID (`test_F1_4_...`,
+  after `test_` is read. `test_AUTH_01[param-a]`, a bare `test_AUTH_01`,
+  and a method of a test class (`classname` ending in `.TestThing`) give
+  `AUTH-01`; `test_login_AUTH_01_x`, `test_step_01_x`, `test_AUTH_1_x`,
+  and `test_AUTH_012_x` give no ID: they count for no ID and are not
+  unknown (F13-1). A card case ID (`test_F1_4_...`,
   `test_CT1_2_...`, `test_F13_2_...`) and a test with no ID give no ID
   and are not checked (F13-1, F13-3).
 
@@ -554,7 +562,7 @@ report.unknown       # Sequence[str]
 - `missing`: the IDs of the file with no test (an empty
   `tests_by_id` entry), in any order (F13-2, F13-5).
 - `unknown`: the labels of the tests named with an ID that is not in the
-  file, in any order (F13-4).
+  file, skipped ones included, in any order (F13-4).
 - The check passes when `missing` and `unknown` are both empty.
 
 ### F13: Command line and report files
@@ -565,7 +573,8 @@ report.unknown       # Sequence[str]
   `<dir>/requirements-report.json` (creating `<dir>` when needed), on a
   pass and on a failure alike, so the report is kept with every run.
 - When `GITHUB_STEP_SUMMARY` is set, appends the Markdown report to that
-  file (the job summary on the run page).
+  file (the job summary on the run page), on a pass and on a failure
+  alike; text already in the file is kept as it was (F13-2, F13-4).
 - Exits `0` when the check passes; otherwise exits non-zero and prints
   (stdout or stderr) each missing ID and each unknown test's label.
 - `requirements-report.json`:
@@ -586,7 +595,23 @@ report.unknown       # Sequence[str]
 | Case | ID file | Tests (JUnit) | Expected |
 |------|---------|---------------|----------|
 | F13-1 | Comments, blank lines, `AUTH-01`, `EXP-04  # ...` | Unit: one `test_AUTH_01_...`, plus `test_F1_4_...`, `test_CT1_2_...`, `test_F13_2_...`, a test with no ID; integration: one `test_AUTH_01_...`, one `test_EXP_04_...` | `load_ids` gives `["AUTH-01", "EXP-04"]`; `tests_by_id` gives both IDs their tests; `missing`, `unknown` empty; command exits `0`; JSON as the result; Markdown names each ID and test and none of the tests without an ID; the job summary holds the Markdown |
-| F13-2 | `AUTH-01`, `AUTH-02` | One `test_AUTH_01_...` | `missing == ["AUTH-02"]`; command exits non-zero and prints `AUTH-02`; the report files are written and name it |
-| F13-3 | `AUTH-01` | `test_AUTH_01_...`, `test_F1_4_...`; no `EXP-04` test | Keys only `AUTH-01`; nothing missing or unknown; exits `0`; `EXP-04` is nowhere in the output or the report. The repository's own `tests/requirement-ids.txt` loads with `load_ids` |
-| F13-4 | `AUTH-01` | `test_AUTH_01_...` (unit), `test_EXP_04_...` (integration) | `unknown` is the label of the `EXP_04` test; exits non-zero and prints the test |
+| F13-2 | `AUTH-01`, `AUTH-02` | One `test_AUTH_01_...` | `missing == ["AUTH-02"]`; command exits non-zero and prints `AUTH-02`; the report files are written and name it; the job summary keeps its earlier text and the appended report names it |
+| F13-3 | `AUTH-01` | `test_AUTH_01_...`, `test_F1_4_...`; no `EXP-04` test | Keys only `AUTH-01`; nothing missing or unknown; exits `0`; `EXP-04` is nowhere in the output or the report. The repository's own `tests/requirement-ids.txt` loads with `load_ids`. An ID file whose line 3 is `auth_01`: exits `2` and names line 3 |
+| F13-4 | `AUTH-01` | `test_AUTH_01_...` (unit), `test_EXP_04_...` and a skipped `test_EXP_05_...` (integration) | `unknown` is the labels of both; exits non-zero and prints both; the job summary keeps its earlier text and the appended report names both |
 | F13-5 | `AUTH-01`, `AUTH-02`, `AUTH-03` | `AUTH_01` only skipped; `AUTH_02` one skipped, one failed; `AUTH_03` one errored | `missing == ["AUTH-01"]`; `AUTH-02` has the failed test, `AUTH-03` the errored one; exits non-zero and prints `AUTH-01` |
+
+### F13: The `requirements` CI job
+
+`.github/workflows/ci.yml`, read as YAML by
+`test_F13_1_ci_keeps_the_report_with_each_run`:
+
+- The jobs `unit` and `integration` each run pytest with
+  `--junitxml=<file>` and upload that file as an artifact
+  (`actions/upload-artifact`) in a step with `if: ${{ !cancelled() }}`.
+- The job `requirements` has `needs` holding `unit` and `integration`
+  and the job-level `if: ${{ !cancelled() }}`: it runs when a test job
+  failed, but not when the run was cancelled.
+- It runs `python -m flowchecks.requirements` with
+  `--ids tests/requirement-ids.txt`, two `--junit <file>`, and
+  `--out <dir>`, and uploads `<dir>` as the artifact
+  `requirements-report` in a step with `if: ${{ !cancelled() }}`.
