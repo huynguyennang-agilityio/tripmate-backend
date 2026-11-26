@@ -216,9 +216,32 @@ jobs:
     name: contract
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # No services: the contract is generated without PostgreSQL or Redis, and Schemathesis
-    # calls the app in process (ASGI). The contract tests of tests/contract run in
-    # `integration`, which runs every test outside tests/unit.
+    # Generating the file and checking its examples need no service. Schemathesis calls the
+    # app in process (ASGI) with its lifespan, so it gets PostgreSQL and Redis like
+    # `integration`. The contract tests of tests/contract run in `integration`, which runs
+    # every test outside tests/unit.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: tripmate_contract
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tripmate_contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -228,37 +251,9 @@ jobs:
           version: "0.13.7"
       - run: uv sync
       - name: Generate openapi.json
-        run: uv run python -m app.platform.contract generate openapi.json
+        run: uv run python -m app.contract generate openapi.json
       - name: Every stub response has an example
-        run: uv run python -m app.platform.contract check openapi.json
-      - name: Schemathesis on the routes that are answered
-        # `/v1/health` is left out: it needs PostgreSQL and Redis (the integration tests
-        # call it). A pass with no operation to test would fail, so it runs only when the
-        # contract has one.
-        run: |
-          operations() {
-            jq --argjson stub "$1" '[.paths | to_entries[] | select(.key != "/v1/health") | .value
-              | to_entries[] | select(.value | type == "object")
-              | select((.value["x-stub"] // false) == $stub)] | length' openapi.json
-          }
-          if [ "$(operations false)" -gt 0 ]; then
-            uv run schemathesis run openapi.json --app app.platform.contract:contract_app \
-              --exclude-path /v1/health --exclude-by "/x-stub == true"
-          else
-            echo "No answered route besides /v1/health: nothing to run."
-          fi
-      - name: Schemathesis on the stubs
-        # A stub answers 501 `server.not_implemented`, which its operation documents with an
-        # example; Schemathesis counts any 5xx as a failure, so this pass skips that one
-        # check and keeps the others (status, content type, response schema).
-        run: |
-          stubs="$(jq '[.paths[][] | select(type == "object" and .["x-stub"] == true)] | length' openapi.json)"
-          if [ "$stubs" -gt 0 ]; then
-            uv run schemathesis run openapi.json --app app.platform.contract:contract_app \
-              --include-by "/x-stub == true" --exclude-checks not_a_server_error
-          else
-            echo "No stub in the contract."
-          fi
+        run: uv run python -m app.contract check openapi.json
       - name: Keep the contract
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -267,6 +262,40 @@ jobs:
           overwrite: true
           path: openapi.json
           if-no-files-found: error
+      - name: Migrate the database
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/tripmate_contract
+        run: uv run alembic upgrade head
+      - name: Schemathesis on the routes that are answered
+        # The app with its settings, as the API process runs it: the lifespan connects to the
+        # services above, so `/v1/health` answers 200.
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/tripmate_contract
+          REDIS_URL: redis://127.0.0.1:6379/0
+          RELEASE_VERSION: contract-ci
+        run: |
+          uv run schemathesis run openapi.json --app app.contract:served_app \
+            --exclude-by "/x-stub == true"
+      - name: Schemathesis on the stubs
+        # A stub answers 501 `server.not_implemented`, which its operation documents with an
+        # example; Schemathesis counts any 5xx as a failure, so this pass skips that one
+        # check and keeps the others (status, content type, response schema). With no stub
+        # there is nothing to select, and Schemathesis would fail.
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/tripmate_contract
+          REDIS_URL: redis://127.0.0.1:6379/0
+          RELEASE_VERSION: contract-ci
+        run: |
+          stubs="$(jq '[.paths[][] | select(type == "object" and .["x-stub"] == true)] | length' openapi.json)"
+          case "$stubs" in
+            ''|*[!0-9]*) echo "::error::Could not count the stubs (got '$stubs')."; exit 1 ;;
+          esac
+          if [ "$stubs" -gt 0 ]; then
+            uv run schemathesis run openapi.json --app app.contract:served_app \
+              --include-by "/x-stub == true" --exclude-checks not_a_server_error
+          else
+            echo "No stub in the contract."
+          fi
 
   migrations:
     name: migrations

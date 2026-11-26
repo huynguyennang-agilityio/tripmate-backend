@@ -1,13 +1,22 @@
 # Publishes the contract (EPIC-11 spec, section 2.10; card F12).
 #
-# Runs only on a push to `main`, and its one job uses the GitHub environment `contracts`,
-# which only `main` may deploy from. `CONTRACTS_TOKEN` is a secret of that environment, so
-# a branch that edits this file can neither run the job nor read the token.
+# Runs only on a push to `main`. Two jobs: `generate` runs the project's code and has no
+# environment and no secret; `publish` uses the GitHub environment `contracts`, which only
+# `main` may deploy from, runs no project code, and only downloads the file. `CONTRACTS_TOKEN`
+# must be a secret of that environment (and not of the repository), so a branch that edits
+# this file can neither run `publish` nor read the token.
 #
-# The job generates `openapi.json` and compares it with `main` of `tripmate-contracts`. No
-# difference: nothing is pushed and no pull request is opened. A difference: one commit on
-# the fixed branch `backend/openapi` (force-updated), and a pull request from that branch
-# (opened when none is open, updated otherwise).
+# `publish` compares the file with `main` and with the branch `backend/openapi` of
+# `tripmate-contracts`:
+# - equal to `main`: nothing is pushed, and an open pull request from the branch is closed
+#   with a comment (it holds a contract nobody serves any more);
+# - different from `main` and from the branch: one commit on the branch (force-updated);
+# - different from `main`, equal to the branch: no push (a push would remove the
+#   `human-approved` label of the open pull request);
+# - different from `main`: a pull request from the branch is opened when none is open, and
+#   its text updated after a push.
+# It does nothing when this commit is no longer the tip of `main`, so a re-run of an old run
+# cannot publish an older contract.
 name: Publish contract
 
 on:
@@ -27,11 +36,10 @@ env:
   CONTRACTS_BRANCH: backend/openapi
 
 jobs:
-  publish:
-    name: publish
+  generate:
+    name: generate
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: contracts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,8 +49,43 @@ jobs:
           version: "0.13.7"
       - run: uv sync
       - name: Generate openapi.json
-        run: uv run python -m app.platform.contract generate "$RUNNER_TEMP/openapi.json"
+        run: uv run python -m app.contract generate openapi.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: publish-openapi
+          overwrite: true
+          path: openapi.json
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: contracts
+    steps:
+      - name: Is this commit still the tip of main?
+        id: tip
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          tip="$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" refs/heads/main | cut -f1)"
+          if [ "$tip" = "$SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "A later commit is on main: this run publishes nothing."
+          fi
+      - name: Download openapi.json
+        if: steps.tip.outputs.current == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: publish-openapi
+          path: generated
       - name: Check out tripmate-contracts
+        if: steps.tip.outputs.current == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.CONTRACTS_REPO }}
@@ -50,17 +93,47 @@ jobs:
           path: contracts
           token: ${{ secrets.CONTRACTS_TOKEN }}
           persist-credentials: false
-      - name: Compare with main of tripmate-contracts
+      - name: Compare with main and with the branch
         id: compare
+        if: steps.tip.outputs.current == 'true'
+        working-directory: contracts
+        env:
+          GH_TOKEN: ${{ secrets.CONTRACTS_TOKEN }}
         run: |
-          if cmp -s "$RUNNER_TEMP/openapi.json" contracts/openapi.json; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "openapi.json is the same as on main of tripmate-contracts: nothing to publish."
+          if cmp -s ../generated/openapi.json openapi.json; then
+            echo "same_as_main=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "same_as_main=false" >> "$GITHUB_OUTPUT"
+          fi
+          gh auth setup-git
+          if git ls-remote --exit-code --heads origin "$CONTRACTS_BRANCH" > /dev/null; then
+            git fetch --depth 1 origin "$CONTRACTS_BRANCH"
+            if git show FETCH_HEAD:openapi.json | cmp -s - ../generated/openapi.json; then
+              echo "same_as_branch=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "same_as_branch=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "same_as_branch=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Close the pull request when the contract equals main again
+        if: steps.tip.outputs.current == 'true' && steps.compare.outputs.same_as_main == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CONTRACTS_TOKEN }}
+        run: |
+          number="$(gh pr list --repo "$CONTRACTS_REPO" --head "$CONTRACTS_BRANCH" --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh pr close "$number" --repo "$CONTRACTS_REPO" \
+              --comment "The contract equals main again: nothing to merge."
+          else
+            echo "openapi.json equals main of tripmate-contracts and no pull request is open."
           fi
       - name: Push the branch
-        if: steps.compare.outputs.changed == 'true'
+        id: push
+        if: >-
+          steps.tip.outputs.current == 'true' && steps.compare.outputs.same_as_main == 'false'
+          && steps.compare.outputs.same_as_branch == 'false'
         working-directory: contracts
         env:
           GH_TOKEN: ${{ secrets.CONTRACTS_TOKEN }}
@@ -70,24 +143,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$CONTRACTS_BRANCH"
-          cp "$RUNNER_TEMP/openapi.json" openapi.json
+          cp ../generated/openapi.json openapi.json
           git add openapi.json
           git commit -m "openapi.json from tripmate-backend $BACKEND_SHA"
           git push --force origin "$CONTRACTS_BRANCH"
       - name: Open or update the pull request
-        if: steps.compare.outputs.changed == 'true'
+        if: steps.tip.outputs.current == 'true' && steps.compare.outputs.same_as_main == 'false'
         env:
           GH_TOKEN: ${{ secrets.CONTRACTS_TOKEN }}
           BACKEND_SHA: ${{ github.sha }}
           BACKEND_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          PUSHED: ${{ steps.push.outcome == 'success' }}
         run: |
+          title="openapi.json from tripmate-backend ${BACKEND_SHA:0:7}"
           body="Generated from \`tripmate-backend\` commit [\`${BACKEND_SHA}\`](${BACKEND_URL}) by the workflow Publish contract. Never edit \`openapi.json\` by hand."
           number="$(gh pr list --repo "$CONTRACTS_REPO" --head "$CONTRACTS_BRANCH" --state open \
             --json number --jq '.[0].number // empty')"
           if [ -z "$number" ]; then
             gh pr create --repo "$CONTRACTS_REPO" --base main --head "$CONTRACTS_BRANCH" \
-              --title "openapi.json from tripmate-backend ${BACKEND_SHA:0:7}" --body "$body"
-          else
-            gh pr edit "$number" --repo "$CONTRACTS_REPO" \
-              --title "openapi.json from tripmate-backend ${BACKEND_SHA:0:7}" --body "$body"
+              --title "$title" --body "$body"
+          elif [ "$PUSHED" = "true" ]; then
+            gh pr edit "$number" --repo "$CONTRACTS_REPO" --title "$title" --body "$body"
           fi
