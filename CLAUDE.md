@@ -64,11 +64,19 @@ every push to `main`. Each job is a check that is required on `main`
 | `types` | `mypy app flowchecks` |
 | `unit` | `pytest tests/unit` (unit and property tests) |
 | `integration` | `pytest tests --ignore=tests/unit` (everything but the unit tests) against PostgreSQL 16 and Redis 7 service containers |
+| `requirements` | after `unit` and `integration` (it runs even when one failed, and fails when a JUnit artifact is missing): `flowchecks.requirements` reads the JUnit XML both jobs write, keeps `requirements-report.md` and `.json` as an artifact, and writes the job summary |
 | `imports` | `lint-imports` |
 | `migrations` | exactly one Alembic head, `alembic upgrade head`, `alembic check` |
 | `audit` | `pip-audit` on the locked dependencies |
 | `secrets` | gitleaks over the commits of the change and the checked-out files |
 | `image` | `docker build` of the `Dockerfile`, no push |
+
+`tests/requirement-ids.txt` lists the P0 requirement IDs in scope, one per line in the form of
+prd.md (`AUTH-01`: capital letters, a hyphen, two digits; `#` starts a comment). `requirements`
+fails when a listed ID has no test that ran (a skipped test does not count) and when a test is
+named with an ID that is not listed (`test_AUTH_01_...` is the ID `AUTH-01`; card case IDs such
+as `test_F1_4_...` are not read). The first card of each epic adds that epic's IDs. Run it by
+hand: `uv run python -m flowchecks.requirements --ids tests/requirement-ids.txt --junit <file> --out <dir>`.
 
 The four flow checks are in `.github/workflows/flow.yml` (a call of the
 reusable `flow-checks.yml`) and `risk-gate.yml` (section "Flow checks"). Checks of later cards
