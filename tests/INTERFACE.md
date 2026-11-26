@@ -567,7 +567,12 @@ with the helpers of `tests/unit/flow/repo.py`.
 from flowchecks import failing_first
 
 passing: list[str] = failing_first.check(
-    repo, base, head, test_command, test_file_pattern="tests/**/*.test.js"
+    repo,
+    base,
+    head,
+    test_command,
+    test_file_pattern="tests/**/*.test.js",
+    no_test_pattern="^# tests 0$",
 )
 ```
 
@@ -587,25 +592,52 @@ passing: list[str] = failing_first.check(
   is its path, for example `tests/unit/calc.test.js`. A file is added by
   a test commit when it is absent at that commit's parent; it is run at
   that commit as `test_command + [path]`, from the repository root of
-  the checkout. A non-zero exit is a failure, as the rule asks; `0` is
-  a pass, and `check` returns the path.
+  the checkout. Any non-zero exit other than `126` and `127` is a
+  failure, as the rule asks, unless the output matches the no-test
+  pattern (below); `0` is a pass, and `check` returns the path.
 - A file that exists at the parent and that the test commit only
   changes is not run and not asked to fail (F15-3).
-- An error of the run: when the test command cannot start (it is not
-  found, so no exit code exists), `check` raises
-  `failing_first.RunError`, whose message names the file. It is never
-  counted as a failure of the test, so the check never passes on it.
+- `no_test_pattern`: `str | None`, keyword-only, default `None`: the
+  caller's regular expression that says a run found no test in the
+  file, for example `^# tests 0$` for `node --test`. It is matched with
+  `re.search` and `re.MULTILINE` (so `^` and `$` are the start and end
+  of each line) against the run's output, stdout and stderr. `None`
+  (or an empty string on the command line or in the workflow) means no
+  no-test detection: the run is judged by its exit code alone. It
+  applies only to files of another language; a Python test file keeps
+  F14's check.
+- An error of the run, for a file of another language, is one of:
+  - the test command cannot start: it is not found or cannot be run
+    (for example a file with no execute permission), so no exit code
+    exists;
+  - the run exits `126` or `127` (a shell's codes for a command that
+    cannot be run or is not found);
+  - the run's output matches `no_test_pattern`, whatever the exit code.
+
+  On an error of the run `check` raises `failing_first.RunError`,
+  whose message names the file. It is never counted as a failure of
+  the test, so the check never passes on it.
 - Command line: the F14 command with
-  `--test-file-pattern "<pattern>"` (default `test_*.py`). It exits
+  `--test-file-pattern "<pattern>"` (default `test_*.py`) and
+  `--no-test-pattern "<regex>"` (default none). It exits
   non-zero and prints the path of each passing file. On an error of the
   run it exits non-zero and prints the file and the words
   `error of the run`, as F14 already does.
 - The reusable workflow takes the pattern as the input
-  `test-file-pattern` (default `test_*.py`) and passes it to the
-  command line. No unit test reads the workflow.
+  `test-file-pattern` (default `test_*.py`) and the no-test pattern as
+  the input `no-test-pattern` (default empty: no no-test detection),
+  and passes them to the command line. Its set-up of the caller's
+  runtime (for example Node 24) is shown on one CI run of F15's pull
+  request; no unit test reads the workflow.
 - The JavaScript tests run with Node's own runner, `node --test <file>`
   (`node` on the PATH; Node 24 locally, the runner's Node in CI). A
   missing `node` fails these tests; they never skip.
+- F15-5 also runs small Python runners written under `tmp_path`,
+  outside the repository under check, as the test command: one that
+  exits with a code it is given (`126`, `127`), and one that prints a
+  TAP summary holding the line `# tests 0` and exits `0`. The test
+  command for the not-executable case is a file under `tmp_path`
+  without execute permission.
 
 | Case | Given | Expected |
 |------|-------|----------|
@@ -614,11 +646,10 @@ passing: list[str] = failing_first.check(
 | F15-3 | `tests/unit/old.test.js` is at `base`; a test commit only changes it, and it still passes | `check` returns `[]`; the command exits `0` |
 | F15-4 | With the pattern `test_*.py`, a test commit adds `tests/test_calc.py` with one failing and one passing function | `check` returns exactly `["tests/test_calc.py::test_already_passes"]`; the command exits non-zero and prints that ID and not the failing one |
 | F15-5 | A test commit adds `tests/unit/calc.test.js`; the test command is a program no machine has | `check` raises `RunError` naming the file; the command exits non-zero and prints the file and `error of the run` |
-
-Open: how the check knows that a file of another language holds no
-test (the second half of F15-5). Node's runner, for example, exits `0`
-for such a file and counts it as one passing test. F15-5 tests only the
-command that cannot start until this is decided.
+| F15-5 | The same, the test command a file without execute permission | The same |
+| F15-5 | The same (the file fails under Node), the test command a runner that exits `126`, then one that exits `127` | The same, for each |
+| F15-5 | A test commit adds `tests/unit/calc.test.js` holding no test; the runner prints `# tests 0` and exits `0`; `no_test_pattern="^# tests 0$"` | The same |
+| F15-5 (control) | A test commit adds the failing `tests/unit/calc.test.js`; `node --test` with `no_test_pattern="^# tests 0$"` (Node prints `# tests 1`) | `check` returns `[]`; the command exits `0` |
 
 ## F13: Requirement-to-test report (`flowchecks.requirements`)
 
