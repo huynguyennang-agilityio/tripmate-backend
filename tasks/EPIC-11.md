@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.1
+**Version:** 1.2
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -157,6 +157,7 @@ Shown once on a throwaway pull request for each case.
 
 - Failing first, test lock, mutation, and the risk gate as scripts with their own tests, in one reusable workflow that the other code repositories call with their own path list and test command.
 - All four required on `main` in `tripmate-backend`.
+- A surviving mutant counts as listed when the pull request description has a `## Surviving mutants` section with one line that names it and gives a reason; editing the description runs the check again.
 - The backend path list for the High items of development-flow.md, section 2.1; the path list, the workflows, each `CLAUDE.md`, and the agent roles are on it; a path no rule names counts as High.
 - The label `human-approved` exists.
 - The four agent roles in `.claude/agents/` match development-flow.md, section 2.3: test, code, test-check, and diff review.
@@ -742,3 +743,4 @@ None.
 |---------|------|---------|
 | 1.0 | 2026-11-25 | First version: the 14 tasks of EPIC-11 in this repository, moved from the EPIC-11 spec, sections 6 and 7, with scope, what each leaves out, the reason for its risk level, and its manual checks. The skeleton tasks write four agent roles, as development-flow.md now says. |
 | 1.1 | 2026-11-25 | F14 manual checks: F14-12 names the four role files, as its test case does. |
+| 1.2 | 2026-11-26 | F14 scope: where a pull request lists a surviving mutant, a `## Surviving mutants` section of its description, as the product owner decided. |
