@@ -24,10 +24,13 @@ concurrency:
 jobs:
   gate:
     # `pull-requests: write` only so that the called job `revoke-approval` can remove the label
-    # after a push; the called workflow gives it to that job alone.
+    # after a push; the called workflow gives it to that job alone. `checks: read` lets the called
+    # job `risk-gate` read the head commit's check suites (when it reached the pull request); a
+    # called job cannot have a permission its caller does not grant, or the run fails to start.
     permissions:
       contents: read
       pull-requests: write
+      checks: read
     uses: ./.github/workflows/risk-gate-check.yml
     with:
       rules-file: .github/risk-paths.toml
