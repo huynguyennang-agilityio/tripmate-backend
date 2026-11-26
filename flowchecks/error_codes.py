@@ -36,6 +36,9 @@ def _texts(translations: Path, language: str, area: str) -> dict[str, object]:
 def check(translations_dir: str | os.PathLike[str], codes: Iterable[str]) -> list[str]:
     """The codes with no text in `en` or no text in `vi`, each once, sorted."""
     translations = Path(translations_dir)
+    for folder in (translations, *(translations / language for language in LANGUAGES)):
+        if not folder.is_dir():
+            raise FileNotFoundError(f"translations folder not found: {folder}")
     cache: dict[tuple[str, str], dict[str, object]] = {}
     missing: set[str] = set()
     for code in set(codes):

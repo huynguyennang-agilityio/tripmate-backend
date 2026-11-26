@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 import time
 from typing import Any
@@ -32,15 +31,15 @@ REQUEST_ID_HEADER = "X-Request-Id"
 REQUEST_INVALID = "request.invalid"
 SERVER_ERROR = "server.error"
 SERVER_UNAVAILABLE = "server.unavailable"
+FIELD_MISSING = "request.field_missing"
+FIELD_INVALID = "request.field_invalid"
 
 # Codes the platform returns itself; each needs text in `tripmate-contracts`.
 # (`server.unavailable` is returned by the health check and the rate limit, cards F1 and F6.)
+# The two field codes are all a `fields` entry can carry, so the set stays closed.
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
-    {REQUEST_INVALID, SERVER_ERROR, SERVER_UNAVAILABLE}
+    {REQUEST_INVALID, SERVER_ERROR, SERVER_UNAVAILABLE, FIELD_MISSING, FIELD_INVALID}
 )
-
-# The code of a field problem is `validation.<Pydantic error type>`; the set is open.
-FIELD_CODE_AREA = "validation"
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -96,8 +95,7 @@ def _field_problem(problem: dict[str, Any]) -> dict[str, str]:
     if kind == "json_invalid":  # `loc` is the position in the text, not a field
         path = []
     field = ".".join(path) or "body"
-    reason = re.sub(r"[^a-z0-9_]", "_", kind.lower())
-    return {"field": field, "code": f"{FIELD_CODE_AREA}.{reason}"}
+    return {"field": field, "code": FIELD_MISSING if kind == "missing" else FIELD_INVALID}
 
 
 async def _app_error_handler(request: Request, error: Exception) -> JSONResponse:
