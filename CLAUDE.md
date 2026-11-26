@@ -151,6 +151,29 @@ always skipped here; never require it.
   `pull_request_target` workflow calls `risk-gate-check.yml` (its caller job
   needs `pull-requests: write` for the label removal).
 
+## Claude Code hooks
+
+`.claude/settings.json` (committed, so every machine has it) runs three hooks from
+`.claude/hooks/` (Python 3, standard library only). They keep the rules above from being
+broken by accident; they are not a security boundary.
+
+| Hook | When | Blocks (exit 2) | Why |
+|------|------|-----------------|-----|
+| `bash_guard.py` | Before `Bash` | Adding the label `human-approved` (`gh pr/issue edit --add-label`, `gh pr create --label`, `gh api ... labels`, `gh label`); `git push` to `main` (named, `HEAD:main`, `:main`, `--all`/`--mirror`, or no refspec while on `main`); any force push (`--force`, `-f`, `--force-with-lease`, `+refspec`); bare `git stash`, `git stash pop`, `git stash save`; `--no-verify` and `git commit -n` | Only the product owner approves a High change; `main` changes through pull requests; the stash stack is shared by every session; the hooks and checks are never skipped |
+| `file_guard.py` | Before `Edit`, `Write`, `MultiEdit`, `NotebookEdit` | Writing `.env` or `.env.*` (not `.env.example`), `*.pem`, `*.key`, `id_rsa*`; new text that holds a GitHub token, an AWS access key ID, a private key block, a Slack token, or a URL with an inline password | The repository is public. A URL password is allowed when it is empty, starts with `<`, `$`, `{`, `%`, or `*`, or is `password`, `postgres`, `pass`, `changeme`, `example`, or `test` |
+| `python_format.py` | After `Edit`, `Write`, `MultiEdit` | Never blocks the edit. Runs `uv run ruff format` and `uv run ruff check --fix` on a `.py` file outside `tests/`, and reports what ruff cannot fix on stderr (exit 2) | Code stays formatted without a manual step. Files under `tests/` are left alone because the test lock compares the test agent's files as text |
+
+- A block message names its rule. Fix the cause; do not look for another spelling of the same
+  command.
+- To do one of these things on purpose (for example a force push after a rebase the product
+  owner asked for), the product owner runs the command themselves. Claude Code never edits
+  `.claude/settings.json` or the hooks to get around a block.
+- `bash_guard.py` reads the command text, so a command built from a variable or a script
+  file is not seen.
+- The hooks have unit tests in `tests/unit/hooks/`. `.claude/**` is a High path (no rule in
+  `.github/risk-paths.toml` names it), so a change to a hook needs the product owner's
+  `human-approved` label.
+
 ## Settings
 
 Environment variables only, read once at start-up and checked; the app
