@@ -119,7 +119,7 @@ tripmate-backend/
 │       └── errors.py, access.py, rate_limits.py, idempotency.py, outbox.py,
 │           jobs.py, logging.py    Interfaces that cards F4 to F10 fill
 ├── migrations/               Alembic environment and versions/ (0001_initial)
-├── flowchecks/               The four flow checks (failing_first, test_lock, mutation, risk_gate)
+├── flowchecks/               The four flow checks (failing_first, test_lock, mutation, risk_gate) and the requirements report
 ├── tests/
 │   ├── unit/                 Unit and property tests (no services); unit/flow tests the checks, unit/hooks the hooks
 │   ├── integration/          Tests against real PostgreSQL and Redis
@@ -233,7 +233,7 @@ uv run lint-imports
 
 ## CI and flow checks
 
-Thirteen checks are required on `main`: nine in `ci.yml` and four flow checks. The rules
+Fourteen checks are required on `main`: ten in `ci.yml` and four flow checks. The rules
 and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow checks".
 
 | Check | What it enforces |
@@ -242,6 +242,7 @@ and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow check
 | `types` | mypy strict on `app` and `flowchecks` |
 | `unit` | Unit and property tests |
 | `integration` | Integration and API tests on PostgreSQL 16 and Redis 7 |
+| `requirements` | Every P0 ID in `tests/requirement-ids.txt` has a test that ran; no test is named with an unlisted ID |
 | `imports` | Module boundaries (import-linter) |
 | `migrations` | One Alembic head, upgrade works, models match migrations |
 | `audit` | pip-audit on locked dependencies |

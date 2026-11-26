@@ -1,6 +1,6 @@
 # Backend CI (EPIC-11 spec, section 2.9). Each job is one required check on `main`;
 # the job `name` is the check's name, so keep the names stable.
-# Checks of later cards (F4, F5, F11, F12, F13, F14) join in their own cards.
+# Checks of later cards (F4, F5, F11, F12, F14) join in their own cards.
 name: CI
 
 on:
@@ -63,7 +63,15 @@ jobs:
           version: "0.13.7"
       - run: uv sync
       - name: Unit and property tests
-        run: uv run pytest tests/unit -q
+        run: uv run pytest tests/unit -q --junitxml=junit-unit.xml
+      - name: Keep the JUnit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-unit
+          overwrite: true
+          path: junit-unit.xml
+          if-no-files-found: error
 
   integration:
     name: integration
@@ -105,7 +113,58 @@ jobs:
       - run: uv sync
       - name: Integration and API tests
         # Everything outside tests/unit, so a new test directory runs in CI.
-        run: uv run pytest tests --ignore=tests/unit -q
+        run: uv run pytest tests --ignore=tests/unit -q --junitxml=junit-integration.xml
+      - name: Keep the JUnit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-integration
+          overwrite: true
+          path: junit-integration.xml
+          if-no-files-found: error
+
+  requirements:
+    name: requirements
+    needs: [unit, integration]
+    # Reports even when a test job failed (not when the run was cancelled); fails when a JUnit artifact is missing.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - run: uv sync
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: junit-unit
+          overwrite: true
+          path: junit
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: junit-integration
+          overwrite: true
+          path: junit
+      - name: Requirement-to-test report
+        run: |
+          uv run python -m flowchecks.requirements \
+            --ids tests/requirement-ids.txt \
+            --junit junit/junit-unit.xml \
+            --junit junit/junit-integration.xml \
+            --out requirements-report
+      - name: Keep the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: requirements-report
+          overwrite: true
+          path: requirements-report
+          if-no-files-found: ignore
 
   imports:
     name: imports
