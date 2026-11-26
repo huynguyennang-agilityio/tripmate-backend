@@ -233,7 +233,7 @@ uv run lint-imports
 
 ## CI and flow checks
 
-Fifteen checks are required on `main`: eleven in `ci.yml` and four flow checks. The rules
+Sixteen checks are required on `main`: twelve in `ci.yml` and four flow checks. The rules
 and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow checks".
 
 | Check | What it enforces |
@@ -244,6 +244,7 @@ and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow check
 | `integration` | Integration and API tests on PostgreSQL 16 and Redis 7 |
 | `requirements` | Every P0 ID in `tests/requirement-ids.txt` has a test that ran; no test is named with an unlisted ID |
 | `imports` | Module boundaries (import-linter) |
+| `error-codes` | Every error code has text in `en` and `vi` in `tripmate-contracts` |
 | `contract` | `openapi.json` generates, every stub response has an example, Schemathesis passes |
 | `migrations` | One Alembic head, upgrade works, models match migrations |
 | `audit` | pip-audit on locked dependencies |

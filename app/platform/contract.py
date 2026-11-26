@@ -15,11 +15,9 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict
 
-from app.platform.errors import AppError
+from app.platform.errors import NOT_IMPLEMENTED, AppError, ErrorResponse
 
-NOT_IMPLEMENTED_CODE = "server.not_implemented"
 STUB_MARK = "x-stub"
 
 # `info.version` of the generated file. It must not change with every merge (no release
@@ -29,50 +27,14 @@ CONTRACT_VERSION = "0.0.0"
 
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
-# FastAPI adds this response itself to a route with parameters; card F4 replaces it with
-# `400 request.invalid`, so the check does not ask for an example on it.
-FRAMEWORK_RESPONSES = frozenset({"422"})
-
-
-class _ErrorBody(BaseModel):
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "code": NOT_IMPLEMENTED_CODE,
-                    "params": {},
-                    "fields": None,
-                    "requestId": None,
-                }
-            ]
-        }
-    )
-
-    code: str
-    params: dict[str, Any]
-    fields: list[dict[str, str]] | None
-    requestId: str | None  # noqa: N815 - the wire name of api-design.md, section 4.1
-
-
-class NotImplementedResponse(BaseModel):
-    """The error format of api-design.md, section 4.1, as a stub answers."""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "error": {
-                        "code": NOT_IMPLEMENTED_CODE,
-                        "params": {},
-                        "fields": None,
-                        "requestId": None,
-                    }
-                }
-            ]
-        }
-    )
-
-    error: _ErrorBody
+_NOT_IMPLEMENTED_EXAMPLE: dict[str, Any] = {
+    "error": {
+        "code": NOT_IMPLEMENTED,
+        "params": {},
+        "fields": None,
+        "requestId": "01JD0000000000000000000000",
+    }
+}
 
 
 def stub(
@@ -87,7 +49,7 @@ def stub(
 
     def decorator(function: Callable[..., Any]) -> Callable[..., Any]:
         async def not_implemented(*args: Any, **kwargs: Any) -> None:
-            raise AppError(501, NOT_IMPLEMENTED_CODE)
+            raise AppError(501, NOT_IMPLEMENTED)
 
         # Same request as the declared function; annotations resolved in its own module.
         not_implemented.__signature__ = inspect.signature(function, eval_str=True)  # type: ignore[attr-defined]
@@ -98,7 +60,11 @@ def stub(
         options = dict(route_options)
         options["openapi_extra"] = {**(options.get("openapi_extra") or {}), STUB_MARK: True}
         options["responses"] = {
-            501: {"model": NotImplementedResponse, "description": "Not implemented yet"},
+            501: {
+                "model": ErrorResponse,
+                "description": "Not implemented yet",
+                "content": {"application/json": {"example": _NOT_IMPLEMENTED_EXAMPLE}},
+            },
             **(options.get("responses") or {}),
         }
         router.add_api_route(path, not_implemented, methods=[method.upper()], **options)
@@ -149,8 +115,6 @@ def check_examples(contract: dict[str, Any]) -> list[str]:
                 continue
             missing = []
             for status, response in sorted(operation.get("responses", {}).items()):
-                if str(status) in FRAMEWORK_RESPONSES:
-                    continue
                 # A response may be a `$ref` to `components/responses`.
                 response = _resolve(contract, response)
                 if not isinstance(response, dict):

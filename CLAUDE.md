@@ -108,6 +108,9 @@ actions are pinned to a full commit SHA with the version in a comment.
   `tripmate-contracts` only when the file differs from both `main` there and the branch, opens
   or updates one pull request, closes it when the file equals `main` again, and does nothing
   when its commit is no longer the tip of `main`.
+- `server.not_implemented` is one of `PLATFORM_ERROR_CODES` in `app/platform/errors.py`, so
+  the `error-codes` job checks its text; a stub's `501` and the `400` that FastAPI documents
+  use `ErrorResponse`, which carries an example.
 - `app/contract.py` is the contract's process entry point (like `app/main.py`);
   `app/platform/contract.py` keeps `stub()` and `check_examples()`.
 

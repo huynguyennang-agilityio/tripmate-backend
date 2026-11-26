@@ -28,13 +28,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
 
-from app.platform.contract import NOT_IMPLEMENTED_CODE
-
 APP_DIR = Path(__file__).resolve().parent.parent
 API_PREFIX = "/v1"
 NOT_MODULES = frozenset({"platform"})
-# Codes the platform itself returns; every process registers them, as a module does its own.
-PLATFORM_ERROR_CODES = (NOT_IMPLEMENTED_CODE,)
 
 # What a module registers. The arguments are settled by the cards that run
 # them: jobs and event handlers by F9 (events by F8), due-work queries by F9.
@@ -83,7 +79,6 @@ def module_names() -> list[str]:
 def scan_modules() -> Registry:
     """Scan `app/` and collect what every module registers."""
     registry = Registry()
-    registry.add_error_codes(*PLATFORM_ERROR_CODES)
     for name in module_names():
         if (APP_DIR / name / "api.py").is_file():
             api = importlib.import_module(f"app.{name}.api")
