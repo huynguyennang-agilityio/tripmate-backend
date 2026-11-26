@@ -23,6 +23,10 @@ What the tests need from the code, and nothing more, card by card:
   and api-design.md, sections 4.1 and 4.2 (cases F4-1 to F4-7), in the
   section "F4: Errors", with the product owner's decisions of
   2026-11-26 on the translation files and the pinned contracts version.
+- F12 Contract publishing: from the EPIC-11 spec, section 2.10,
+  api-design.md, sections 4.1 and 6, and the task's scope, version 1.7
+  (cases F12-1 to F12-3; F12-4 to F12-6 are manual checks), in the
+  section "F12: Contract publishing".
 
 ## Running the tests
 
@@ -781,3 +785,101 @@ missing: list[str] = error_codes.check(translations_dir, codes)
 |------|--------------|-------|----------|
 | F4-6 | `en/f4probe.json` has `f4probe.no_vietnamese_text` and `f4probe.has_both_texts`; `vi/f4probe.json` only the second; `en/f4nofile.json` has `f4nofile.no_vietnamese_file` and there is no `vi/f4nofile.json` | `scan_modules().error_codes`, holding all three from a temporary module's `register` | Holds `f4probe.no_vietnamese_text` and `f4nofile.no_vietnamese_file`, not `f4probe.has_both_texts` |
 | F4-7 | `request.invalid` and `f4probe.has_both_texts` in `en` and `vi`; `en/f4probe.json` also holds an unregistered key | Those two codes | `[]` |
+
+## F12: Contract publishing
+
+`app/platform/contract.py` holds the stub helper, the generator of
+`openapi.json`, and the example check (task F12, scope). The tests are
+`tests/contract/platform/test_F12_contract.py` (level C) and
+`tests/api/platform/test_F12_stub.py` (level A); their shared helpers are
+in `tests/contract/platform/f12_support.py`.
+
+### F12: Declaring a stub
+
+A module's `api.py` declares a stub route with `stub()`:
+
+```python
+from fastapi import APIRouter
+from pydantic import BaseModel, ConfigDict
+
+from app.platform.contract import stub
+
+router = APIRouter()
+
+
+class Place(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"name": "Da Lat"}]})
+
+    name: str
+
+
+@stub(router, "GET", "/<segment>", response_model=Place)
+async def place() -> Place: ...
+```
+
+- `stub(router, method, path, **route_options)` returns a decorator that
+  adds the decorated function to `router` as the route `method path`
+  (`method` an upper-case HTTP method name). `route_options` are those of
+  FastAPI's `router.add_api_route` (the tests pass `response_model`). The
+  function's signature declares the request; its body is never what
+  answers.
+- Calling the route returns `501` with the error format of
+  api-design.md, section 4.1 (`app/platform/errors.py`): a JSON object
+  whose only key is `error`, whose keys are exactly `code`, `params`,
+  `fields`, `requestId`, and whose `code` is `server.not_implemented`.
+- In the contract, the operation object of the route
+  (`paths["/v1/<segment>"]["get"]`) has `"x-stub": true`. An operation that
+  is not a stub (for example `GET /v1/health`) has no `x-stub: true`.
+- An example on a response schema is given as above, on the response
+  model (`json_schema_extra={"examples": [...]}`, which pydantic writes as
+  `examples` on the model's schema). A response model with no
+  `json_schema_extra` has no example.
+
+### F12: Generating `openapi.json`
+
+```text
+python -m app.platform.contract generate <output path>
+```
+
+- Run from the repository root with the project's Python. It writes the
+  contract of the app (every module found by scanning `app/`, as
+  `create_app()` builds it) to `<output path>` as JSON, and exits `0`.
+  The written file has the key `openapi` and the path `/v1/health`.
+- It works with `DATABASE_URL`, `REDIS_URL`, and `PORT` not set, and
+  reaches neither PostgreSQL nor Redis (the CI job `contract` has no
+  services). The tests set `RELEASE_VERSION` to a fixed value and no
+  other app setting.
+- The same app gives the same file: two runs in separate processes
+  (with `PYTHONHASHSEED` `1` and `2`) write byte-identical files (F12-1).
+
+### F12: The example check
+
+```python
+from app.platform.contract import check_examples
+
+problems: list[str] = check_examples(contract)   # contract: dict, as read from openapi.json
+```
+
+```text
+python -m app.platform.contract check <openapi.json path>
+```
+
+- `check_examples` takes the contract as a JSON object (the generated
+  file read with `json.load`, unchanged) and returns one message per
+  operation marked `x-stub: true` that has a response schema with no
+  example; an empty list when there is none. It does not change its
+  argument.
+- A message names its operation as `<METHOD> <path>`: the upper-case
+  method, one space, and the path as written in the contract, for
+  example `GET /v1/places`. A message never names an operation whose
+  response schemas all have an example.
+- Operations that are not stubs are not checked.
+- `check` reads the file, prints the messages (stdout or stderr), and
+  exits non-zero when there is one; it exits `0` when there is none.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F12-1 | The app with no change, generated twice in separate processes | Byte-identical files; `openapi` and `/v1/health` in them |
+| F12-2 (C) | A module folder whose `api.py` declares one stub with an example | The generated contract has `x-stub: true` on `GET /v1/<segment>`, and not on `GET /v1/health` |
+| F12-2 (A) | The same module, the app built with `create_app()` (PostgreSQL and Redis on closed ports) | `GET /v1/<segment>` returns `501` with `{"error": {"code": "server.not_implemented", "params", "fields", "requestId"}}` |
+| F12-3 | Control: one stub with an example. Then a second stub, `GET /v1/<segment>-bare`, whose response model has none | Control: `check_examples` gives `[]`, `check` exits `0`. Then: `check_examples` gives messages, one naming `GET /v1/<segment>-bare` and none naming `GET /v1/<segment>`; `check` exits non-zero and its output names the bare stub and not the other |
