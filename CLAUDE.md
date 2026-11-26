@@ -135,7 +135,7 @@ always skipped here; never require it.
 
 | Check | Fails when |
 |-------|------------|
-| `failing-first` | A test that a test commit (trailer `Agent: test`) adds passes at that commit. Each test commit is checked out and run in turn; a commit that only changes tests is not asked to fail. Pytest exit 1 or 2 counts as failing first, and so does exit 4 when its output has `ERROR collecting <the test's own file>` (a test ID whose module fails to import); any other exit, such as a crashing `conftest.py`, is an error of the run and fails the check. Runs against PostgreSQL 16 and Redis 7. |
+| `failing-first` | A test that a test commit (trailer `Agent: test`) adds passes at that commit. Each test commit is checked out and run in turn; a commit that only changes tests is not asked to fail. Pytest exit 1 or 2 counts as failing first, and so does exit 4 when its output has `ERROR collecting <the test's own file>` (a test ID whose module fails to import); any other exit, such as a crashing `conftest.py`, is an error of the run and fails the check. A test file of another language (the caller's `test-file-pattern`, default `test_*.py`) that a commit adds is run whole as `test-command <path>` and fails first on any non-zero exit; an error of the run is a command that cannot start, exit 126 or 127, or output that matches the caller's `no-test-pattern`. Runs against PostgreSQL 16 and Redis 7. |
 | `test-lock` | A commit without the trailer changes, skips, or deletes a locked test (its function or method, with the module and class context it uses: imports, constants, helpers, `pytestmark`) or a locked support file; the head is compared with the last locked state too, so a merge cannot hide a change. A test commit that touches a path outside `tests/` fails too, and so does any commit without the trailer that adds, changes, or deletes a `conftest.py` at any depth (also one that came from `main`), and so does a merge commit that leaves any `conftest.py` different from its text at the last test commit that touched it (or at the merge base); a needed change goes through the test agent. A new test a code commit adds is not locked. |
 | `mutation` | A changed rule file has a surviving, untested, or unchecked mutant (mutmut), or gains a `# pragma: no mutate` or `no cover`, that the pull request description does not list |
 | `risk-gate` | A High path changed and the pull request has no `human-approved` label |
@@ -181,6 +181,13 @@ always skipped here; never require it.
   base commit, so a change that repairs a broken check is judged by the broken
   check. When that check blocks the fix, the product owner merges with an admin
   merge after reading the diff.
+- Other languages: the workflow inputs `test-file-pattern` (a pattern without `/` matches the file
+  name, one with `/` the path from the repository root, `**` spans folders), `no-test-pattern` (a
+  regular expression matched per line against the run's output; empty means none), and
+  `node-version` (empty sets up no Node; otherwise `actions/setup-node` runs before `setup-command`).
+  Known limits: a non-Python file is judged as a whole, so a test added to a file that already
+  exists is not checked; the caller's `no-test-pattern` must fit its runner (the pattern is not
+  guessed); a non-zero exit from a broken test file counts as failing, like a failing test.
 - Run one check by hand from the repository root, for example
   `uv run python -m flowchecks.risk_gate --rules .github/risk-paths.toml --repo . --base origin/main --head HEAD`.
 - Other repositories call `flow-checks.yml` with their own path list and test

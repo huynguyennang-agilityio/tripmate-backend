@@ -45,6 +45,18 @@ on:
         description: Shell command that installs the caller's dependencies (for example `uv sync --locked`)
         type: string
         default: ""
+      test-file-pattern:
+        description: The caller's test file pattern (for example `tests/**/*.test.js`); a pattern without `/` matches the file name, one with `/` the path from the repository root
+        type: string
+        default: test_*.py
+      no-test-pattern:
+        description: Regular expression (matched per line) that says a run found no test in a file, which is an error of the run (for example `^ok \d+ - \S+\.test\.js$`); empty means no such detection
+        type: string
+        default: ""
+      node-version:
+        description: Node.js version to set up for failing-first, before the setup command (for example `24`); empty sets up none
+        type: string
+        default: ""
       run-mutation:
         description: Run the mutation check (backend only; needs a Python project with mutmut)
         type: boolean
@@ -103,6 +115,11 @@ jobs:
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.13.7"
+      - name: Set up the caller's Node.js
+        if: ${{ inputs.node-version != '' }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
       - name: Install the caller's dependencies
         if: ${{ inputs.setup-command != '' }}
         env:
@@ -138,11 +155,14 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TEST_COMMAND: ${{ inputs.test-command }}
+          TEST_FILE_PATTERN: ${{ inputs.test-file-pattern }}
+          NO_TEST_PATTERN: ${{ inputs.no-test-pattern }}
         run: |
           cd .flowchecks-src
           uv run --no-project --python 3.13 python -m flowchecks.failing_first \
             --repo "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA" \
-            --test-command "$TEST_COMMAND"
+            --test-command "$TEST_COMMAND" \
+            --test-file-pattern "$TEST_FILE_PATTERN" --no-test-pattern "$NO_TEST_PATTERN"
 
   test-lock:
     name: test-lock
