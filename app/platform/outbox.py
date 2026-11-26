@@ -7,21 +7,26 @@ the worker's job and comes with card F9.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import insert, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.platform.models import OutboxEvent
-
-# One statement takes the next number of a trip. The row lock it takes on the trip's
-# counter makes a second transaction of the same trip wait for the first to end.
-_NEXT_TRIP_SEQ = text(
+# One statement takes the trip's next number and stores the event with it, so the number
+# is never taken without its row. The row lock on the trip's counter makes a second
+# transaction of the same trip wait for the first to end.
+_ADD_EVENT = text(
+    "WITH next AS ("
     "INSERT INTO outbox_trip_seqs (trip_id, last_seq) VALUES (:trip_id, 1) "
     "ON CONFLICT (trip_id) DO UPDATE SET last_seq = outbox_trip_seqs.last_seq + 1 "
     "RETURNING last_seq"
+    ") "
+    "INSERT INTO outbox_events (trip_id, trip_seq, type, payload) "
+    "SELECT :trip_id, last_seq, :type, CAST(:payload AS jsonb) FROM next "
+    "RETURNING trip_seq"
 )
 
 
@@ -36,11 +41,17 @@ async def add_event(
 
     The first event of a trip gets 1, each next one the previous plus one, with no gap.
     Never commits: the caller's transaction decides whether the event is stored.
+
+    A payload that is not JSON raises before any SQL is sent, so no number is taken.
+
+    The trip's counter row is locked until the caller's transaction ends: another
+    transaction that adds an event of the same trip waits for it. So call this late in
+    the transaction, after the other work, and add the events of one trip in one
+    transaction, never across several.
     """
-    trip_seq: int = (await session.execute(_NEXT_TRIP_SEQ, {"trip_id": trip_id})).scalar_one()
-    await session.execute(
-        insert(OutboxEvent).values(
-            trip_id=trip_id, trip_seq=trip_seq, type=type, payload=dict(payload)
-        )
+    payload_json = json.dumps(payload)
+    result = await session.execute(
+        _ADD_EVENT,
+        {"trip_id": trip_id, "type": type, "payload": payload_json},
     )
-    return trip_seq
+    return int(result.scalar_one())
