@@ -7,10 +7,14 @@ because values hold passwords (EPIC-11 spec, section 2.7).
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -30,6 +34,7 @@ SETTING_NAMES = {
     "REDIS_URL": "redis_url",
     "RELEASE_VERSION": "release_version",
     "PORT": "port",
+    "ACCESS_TOKEN_PUBLIC_KEYS": "access_token_public_keys",
 }
 
 DEFAULT_PORT = 8000
@@ -87,6 +92,27 @@ def _checked_redis_url(secret: SecretStr) -> SecretStr:
     return secret
 
 
+_PEM_BLOCK = re.compile(r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----", re.DOTALL)
+
+
+def _checked_public_keys(value: Any) -> tuple[str, ...]:
+    """One or more Ed25519 public keys in PEM, one after another; each is returned as one PEM."""
+    if not isinstance(value, str):
+        raise ValueError("must be text")
+    blocks = _PEM_BLOCK.findall(value)
+    # Whatever lies between the blocks must be blank, so a damaged block is not skipped.
+    if not blocks or _PEM_BLOCK.sub("", value).strip():
+        raise ValueError("must hold only PEM public keys (BEGIN PUBLIC KEY)")
+    for block in blocks:
+        try:
+            key = load_pem_public_key(block.encode("ascii", errors="replace"))
+        except (ValueError, UnsupportedAlgorithm):
+            raise ValueError("holds a public key that cannot be read") from None
+        if not isinstance(key, Ed25519PublicKey):
+            raise ValueError("holds a public key that is not an Ed25519 key")
+    return tuple(blocks)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -96,6 +122,14 @@ class Settings(BaseModel):
     redis_url: Annotated[SecretStr, Field(min_length=1)]
     release_version: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     port: Annotated[int, Field(ge=1, le=65535)] = DEFAULT_PORT
+    # Public keys, not secrets. Optional: without one, every route that is not public
+    # answers `401 auth.not_signed_in` (EPIC-11 spec, section 2.2).
+    access_token_public_keys: tuple[str, ...] = ()
+
+    @field_validator("access_token_public_keys", mode="before")
+    @classmethod
+    def _ed25519_public_keys(cls, value: Any) -> tuple[str, ...]:
+        return _checked_public_keys(value)
 
     @field_validator("database_url")
     @classmethod

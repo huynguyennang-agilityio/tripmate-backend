@@ -9,6 +9,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from app.platform import health
+from app.platform.access import install_device_id
 from app.platform.config import Settings, load_settings, load_settings_or_exit
 from app.platform.db import create_engine, install_sessions
 from app.platform.errors import install_error_handlers, install_openapi, install_request_id
@@ -40,10 +41,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="TripMate", version=settings.release_version, lifespan=lifespan)
     install_error_handlers(app)
     install_openapi(app)
+    app.state.settings = settings
     app.include_router(health.router)
     registry = scan_modules()
     app.state.registry = registry
     include_routes(app, registry)
+    # Inside the request ID middleware, which answers its `AppError`.
+    install_device_id(app)
     # Added last, so it is the outermost middleware (see RequestIdMiddleware).
     install_request_id(app)
     return app

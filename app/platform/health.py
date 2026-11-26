@@ -11,10 +11,11 @@ import asyncio
 from collections.abc import Awaitable
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.platform.access import public
 from app.platform.db import ping_database
 from app.platform.errors import AppError
 from app.platform.redis_client import ping_redis
@@ -42,7 +43,7 @@ async def _answers(ping: Awaitable[None]) -> bool:
     return True
 
 
-@router.get("/v1/health")
+@router.get("/v1/health", dependencies=[Depends(public)])
 async def health(request: Request) -> dict[str, str]:
     resources: Resources = request.app.state.resources
     database_ok, redis_ok = await asyncio.gather(
