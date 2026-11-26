@@ -1,0 +1,12 @@
+# The P0 requirement IDs of prd.md that are in scope for this repository.
+# The CI job `requirements` (flowchecks.requirements) fails when an ID below has
+# no test that ran (a skipped test does not count), and when a test is named
+# with a requirement ID that is not below.
+#
+# Format: one ID per line, in the form of prd.md, for example AUTH-01 or EXP-04
+# (capital letters, a hyphen, two digits). A line that starts with # is a
+# comment, text after # on a line is a comment, and blank lines are ignored.
+#
+# EPIC-11 has no P0 requirement of prd.md, so no ID is listed yet. The first
+# card of each epic adds that epic's P0 IDs here. This file is a High path
+# (.github/risk-paths.toml): removing an ID hides a missing test.

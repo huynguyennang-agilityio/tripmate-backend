@@ -12,6 +12,10 @@ What the tests need from the code, and nothing more, card by card:
   development-flow.md, sections 2.1 and 2.3, and the task's scope
   (cases F14-1 to F14-11; F14-12 is a manual check), in the sections
   whose names start with "F14".
+- F13 Requirement-to-test report: from the EPIC-11 spec, section 2.12
+  (row "Requirement-to-test report"), test-strategy.md, sections 1 and
+  5, and the task's scope, version 1.5 (cases F13-1 to F13-5), in the
+  sections whose names start with "F13".
 
 ## Running the tests
 
@@ -479,3 +483,110 @@ shown: list[str] = mutation.check(changed, rules, pr_description, run_mutants)
 | F14-11 | `app/money/splits.py` (own list: Medium), `README.md` | `app.money.splits.x_allocate__mutmut_3` | No `## Surviving mutants` section; the section lists only another mutant; the line names it with no reason; it is listed with a reason only under `## Notes` | Holds the mutant; `run_mutants` called once with `["app/money/splits.py"]` |
 | F14-11 | The same | The same | The section lists it with a reason | `[]` |
 | F14-11 | The same, with the backend's path list | The same | No section | Holds the mutant; `run_mutants` called with `["app/money/splits.py"]` |
+
+## F13: Requirement-to-test report (`flowchecks.requirements`)
+
+The check is a module of the `flowchecks/` package, with the same shape
+as the F14 checks: importable functions and a command line,
+`python -m flowchecks.requirements ...`, run from the repository root.
+It reads only the files it is given (the ID file and the JUnit XML
+files) and writes only into `--out` and `$GITHUB_STEP_SUMMARY`; it reads
+nothing outside the repository (not prd.md). In CI it is the job
+`requirements`, which runs after `unit` and `integration` and reads the
+JUnit XML each of them writes (`pytest --junitxml=<file>`).
+
+The tests are in `tests/unit/flow/test_F13_requirements.py`. They build
+the ID file and the JUnit XML under `tmp_path` and never read the
+repository's own test results.
+
+### F13: The ID file (`tests/requirement-ids.txt`)
+
+- UTF-8 text, one requirement ID per line, in the form of prd.md:
+  capital letters, a hyphen, two digits (`AUTH-01`, `EXP-04`).
+- Text from `#` to the end of the line is a comment; surrounding spaces
+  are ignored; a line left empty is ignored.
+- The IDs listed are the P0 IDs in scope. An ID not listed is not asked
+  for (F13-3). The first card of each epic adds that epic's IDs;
+  EPIC-11 has none, so the repository's file holds only its header
+  comment.
+- A line that is not an ID after comments are removed is an error of the
+  file (the code decides how it reports it; no test relies on it).
+
+### F13: Tests read from JUnit XML
+
+- A JUnit XML file is what pytest's `--junitxml` writes: a root
+  `<testsuites>` with `<testsuite>` elements holding `<testcase
+  classname="..." name="...">`. The check reads one or more such files
+  and takes every `<testcase>` of all of them.
+- A test's label is `<classname>::<name>`, for example
+  `tests.integration.money.test_splits::test_EXP_04_remainder_goes_by_join_order`.
+- A testcase with a `<skipped>` child is not a test (F13-5): it counts
+  for no ID and is not in the report's lists of tests. (pytest also
+  writes an expected failure, `xfail`, as `<skipped>`.)
+- A testcase with a `<failure>` or `<error>` child is still a test of
+  its ID: it ran, and the `unit` or `integration` job already fails on
+  it (F13-5).
+- The requirement ID of a test is read from `name` (the function name,
+  with any `[parameters]` suffix): `test_`, then capital letters, an
+  underscore, two digits, then `_`, `[`, or the end of the name.
+  `test_AUTH_01_password_is_hashed` gives `AUTH-01`. Only an ID right
+  after `test_` is read. A card case ID (`test_F1_4_...`,
+  `test_CT1_2_...`, `test_F13_2_...`) and a test with no ID give no ID
+  and are not checked (F13-1, F13-3).
+
+### F13: The check
+
+```python
+from flowchecks import requirements
+
+ids: list[str] = requirements.load_ids(ids_file)       # in file order
+report = requirements.check(ids_file, junit_files)
+report.tests_by_id   # Mapping[str, Sequence[str]]
+report.missing       # Sequence[str]
+report.unknown       # Sequence[str]
+```
+
+- `ids_file`: `str | os.PathLike[str]`; `junit_files`:
+  `Iterable[str | os.PathLike[str]]`.
+- `tests_by_id` has one key for every ID of the ID file, and no other
+  key; its value is the labels of the tests of that ID (skipped ones
+  left out), in any order, or empty.
+- `missing`: the IDs of the file with no test (an empty
+  `tests_by_id` entry), in any order (F13-2, F13-5).
+- `unknown`: the labels of the tests named with an ID that is not in the
+  file, in any order (F13-4).
+- The check passes when `missing` and `unknown` are both empty.
+
+### F13: Command line and report files
+
+`python -m flowchecks.requirements --ids <file> --junit <file> [--junit <file> ...] --out <dir>`
+
+- Writes `<dir>/requirements-report.md` and
+  `<dir>/requirements-report.json` (creating `<dir>` when needed), on a
+  pass and on a failure alike, so the report is kept with every run.
+- When `GITHUB_STEP_SUMMARY` is set, appends the Markdown report to that
+  file (the job summary on the run page).
+- Exits `0` when the check passes; otherwise exits non-zero and prints
+  (stdout or stderr) each missing ID and each unknown test's label.
+- `requirements-report.json`:
+
+  ```json
+  {
+    "ids": {"AUTH-01": ["<label>", "..."], "EXP-04": []},
+    "missing": ["EXP-04"],
+    "unknown": ["<label>"]
+  }
+  ```
+
+  The same content as the result of `check`; lists in any order.
+- `requirements-report.md`: every ID of the file with the labels of its
+  tests (the layout, for example a table, is the code's), the missing
+  IDs, and the unknown tests. Tests that give no ID are not in it.
+
+| Case | ID file | Tests (JUnit) | Expected |
+|------|---------|---------------|----------|
+| F13-1 | Comments, blank lines, `AUTH-01`, `EXP-04  # ...` | Unit: one `test_AUTH_01_...`, plus `test_F1_4_...`, `test_CT1_2_...`, `test_F13_2_...`, a test with no ID; integration: one `test_AUTH_01_...`, one `test_EXP_04_...` | `load_ids` gives `["AUTH-01", "EXP-04"]`; `tests_by_id` gives both IDs their tests; `missing`, `unknown` empty; command exits `0`; JSON as the result; Markdown names each ID and test and none of the tests without an ID; the job summary holds the Markdown |
+| F13-2 | `AUTH-01`, `AUTH-02` | One `test_AUTH_01_...` | `missing == ["AUTH-02"]`; command exits non-zero and prints `AUTH-02`; the report files are written and name it |
+| F13-3 | `AUTH-01` | `test_AUTH_01_...`, `test_F1_4_...`; no `EXP-04` test | Keys only `AUTH-01`; nothing missing or unknown; exits `0`; `EXP-04` is nowhere in the output or the report. The repository's own `tests/requirement-ids.txt` loads with `load_ids` |
+| F13-4 | `AUTH-01` | `test_AUTH_01_...` (unit), `test_EXP_04_...` (integration) | `unknown` is the label of the `EXP_04` test; exits non-zero and prints the test |
+| F13-5 | `AUTH-01`, `AUTH-02`, `AUTH-03` | `AUTH_01` only skipped; `AUTH_02` one skipped, one failed; `AUTH_03` one errored | `missing == ["AUTH-01"]`; `AUTH-02` has the failed test, `AUTH-03` the errored one; exits non-zero and prints `AUTH-01` |
