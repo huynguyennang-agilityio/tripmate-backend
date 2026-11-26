@@ -1,0 +1,30 @@
+# The flow checks on every pull request to `main` (EPIC-11 spec, section 2.12). The job is a
+# call of the reusable workflow, so its checks are named `flow / failing-first`,
+# `flow / test-lock`, `flow / mutation`, and `flow / risk-gate`; all four are required on `main`.
+# `edited` runs the checks again when the description changes (the surviving mutants), and
+# `labeled` and `unlabeled` when `human-approved` is added or removed.
+name: Flow
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  flow:
+    uses: ./.github/workflows/flow-checks.yml
+    with:
+      rules-file: .github/risk-paths.toml
+      test-command: uv run pytest
+      setup-command: uv sync --locked
+      run-mutation: true
+      databases: true
+      # This repository's own checks, at the pull request's head.
+      flowchecks-ref: ${{ github.event.pull_request.head.sha }}

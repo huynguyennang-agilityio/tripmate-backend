@@ -43,7 +43,7 @@ several machines".
 |------|---------|
 | Tests | `TEST_DATABASE_URL=postgresql+asyncpg://tripmate@127.0.0.1:5432/tripmate_test TEST_REDIS_URL=redis://127.0.0.1:6379/0 uv run pytest tests -q` |
 | Lint and format | `uv run ruff check .` and `uv run ruff format --check .` |
-| Types | `uv run mypy app` |
+| Types | `uv run mypy app flowchecks` |
 | Module boundaries | `uv run lint-imports` |
 | Local PostgreSQL and Redis | `docker compose up -d` |
 | One process, from the repository root | `python -m app.main`, `python -m app.worker`, `python -m app.scheduler` (the image's default command is the API) |
@@ -61,7 +61,7 @@ every push to `main`. Each job is a check that is required on `main`
 | Job | Runs |
 |-----|------|
 | `lint` | `ruff check .` and `ruff format --check .` |
-| `types` | `mypy app` |
+| `types` | `mypy app flowchecks` |
 | `unit` | `pytest tests/unit` (unit and property tests) |
 | `integration` | `pytest tests --ignore=tests/unit` (everything but the unit tests) against PostgreSQL 16 and Redis 7 service containers |
 | `imports` | `lint-imports` |
@@ -70,8 +70,46 @@ every push to `main`. Each job is a check that is required on `main`
 | `secrets` | gitleaks over the commits of the change and the checked-out files |
 | `image` | `docker build` of the `Dockerfile`, no push |
 
-Checks of later cards join this file in their own cards. Third-party
+The four flow checks are in `.github/workflows/flow.yml`, a call of the
+reusable `flow-checks.yml` (section "Flow checks"). Checks of later cards
+join these files in their own cards. Third-party
 actions are pinned to a full commit SHA with the version in a comment.
+
+## Flow checks
+
+`.github/workflows/flow.yml` runs the four checks of development-flow.md,
+section 2.3, on every pull request to `main` (EPIC-11 spec, section 2.12).
+The code is the `flowchecks/` package (`failing_first`, `test_lock`,
+`mutation`, `risk_gate`), offered to the other code repositories as the
+reusable workflow `.github/workflows/flow-checks.yml`. All four are required
+on `main`; because the job of `flow.yml` is called `flow`, the checks are
+named `flow / failing-first`, `flow / test-lock`, `flow / mutation`, and
+`flow / risk-gate`.
+
+| Check | Fails when |
+|-------|------------|
+| `failing-first` | A test the test commit (trailer `Agent: test`) added passes at that commit. Runs against PostgreSQL 16 and Redis 7. |
+| `test-lock` | A commit without the trailer changes, skips, or deletes a test of the test commit. A new test it adds is not locked. |
+| `mutation` | A changed rule file has a surviving mutant (mutmut) that the pull request description does not list |
+| `risk-gate` | A High path changed and the pull request has no `human-approved` label |
+
+- The path list is `.github/risk-paths.toml`: `[[rule]]` tables with a
+  `glob`, a `level` (High, Medium, or Low), and a `reason`. The highest level
+  of the matching rules applies; a path no rule names is High. The path list,
+  `.github/workflows/**`, every `CLAUDE.md`, and `.claude/agents/**` are High
+  whatever the file says. Its Medium rules name the rule files of
+  architecture.md, section 4, the files mutation testing runs on.
+- `human-approved`: only the product owner adds this label to a pull
+  request, to approve a High change. Claude Code never adds it.
+- A surviving mutant is listed in the pull request description under
+  `## Surviving mutants`, one line each: `- <mutant name>: <reason>` (the
+  name as mutmut prints it, for example `app.money.splits.x_allocate__mutmut_3`).
+  Editing the description runs the check again.
+- Run one check by hand from the repository root, for example
+  `uv run python -m flowchecks.risk_gate --rules .github/risk-paths.toml --repo . --base origin/main --head HEAD`.
+- Other repositories call `flow-checks.yml` with their own path list and test
+  command, and pin `flowchecks-ref` to a tag or commit of this repository
+  (the header of the workflow explains why).
 
 ## Settings
 
