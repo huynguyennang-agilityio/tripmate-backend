@@ -64,7 +64,7 @@ every push to `main`. Each job is a check that is required on `main`
 | `types` | `mypy app flowchecks` |
 | `unit` | `pytest tests/unit` (unit and property tests) |
 | `integration` | `pytest tests --ignore=tests/unit` (everything but the unit tests) against PostgreSQL 16 and Redis 7 service containers |
-| `requirements` | after `unit` and `integration` (it runs even when one failed, and fails when a JUnit artifact is missing): `flowchecks.requirements` reads the JUnit XML both jobs write, keeps `requirements-report.md` and `.json` as an artifact, and writes the job summary |
+| `requirements` | after `unit` and `integration` (it runs even when one failed, but not when the run was cancelled, and fails when a JUnit artifact is missing): `flowchecks.requirements` reads the JUnit XML both jobs write, keeps `requirements-report.md` and `.json` as an artifact, and writes the job summary |
 | `imports` | `lint-imports` |
 | `migrations` | exactly one Alembic head, `alembic upgrade head`, `alembic check` |
 | `audit` | `pip-audit` on the locked dependencies |

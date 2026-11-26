@@ -21,3 +21,7 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# CI reports
+junit-*.xml
+requirements-report/

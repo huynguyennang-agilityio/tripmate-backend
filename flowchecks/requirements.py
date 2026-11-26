@@ -78,6 +78,9 @@ def check(
             unknown.append(label)
         elif not skipped:
             tests_by_id[requirement].append(label)
+    # pytest writes two testcases with one name when a test fails and its teardown errors.
+    unknown = list(dict.fromkeys(unknown))
+    tests_by_id = {key: list(dict.fromkeys(value)) for key, value in tests_by_id.items()}
     missing = [requirement for requirement, tests in tests_by_id.items() if not tests]
     return Report(tests_by_id, missing, unknown)
 
