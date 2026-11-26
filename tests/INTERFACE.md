@@ -556,6 +556,70 @@ shown: list[str] = mutation.check(changed, rules, pr_description, run_mutants)
 | F14-11 | The same | The same | The section lists it with a reason | `[]` |
 | F14-11 | The same, with the backend's path list | The same | No section | Holds the mutant; `run_mutants` called with `["app/money/splits.py"]` |
 
+## F15: Failing first in any language
+
+F15 widens `flowchecks.failing_first` (section "F14: Failing first")
+to the test files of any language (EPIC-11 spec, section 2.12). The
+tests are in `tests/unit/flow/test_F15_failing_first_any_language.py`,
+with the helpers of `tests/unit/flow/repo.py`.
+
+```python
+from flowchecks import failing_first
+
+passing: list[str] = failing_first.check(
+    repo, base, head, test_command, test_file_pattern="tests/**/*.test.js"
+)
+```
+
+- `test_file_pattern`: `str`, keyword-only, the caller's test file
+  pattern. Its default is `"test_*.py"`, so the backend's calls of F14
+  (without it) are unchanged.
+- Matching: a pattern without `/` is matched against the file name (as
+  `test_*.py` matches `tests/unit/test_calc.py`); a pattern with `/` is
+  matched against the path from the repository root, where `**`
+  matches any number of folders. The tests only use paths on which
+  every reading of `**` agrees (`tests/unit/calc.test.js` for
+  `tests/**/*.test.js`).
+- A file that matches the pattern and ends in `.py` is a Python test
+  file: it keeps the per-function check of F14 (test IDs
+  `<path>::<function>`, pytest's exit codes).
+- Any other file that matches the pattern is checked per file. Its ID
+  is its path, for example `tests/unit/calc.test.js`. A file is added by
+  a test commit when it is absent at that commit's parent; it is run at
+  that commit as `test_command + [path]`, from the repository root of
+  the checkout. A non-zero exit is a failure, as the rule asks; `0` is
+  a pass, and `check` returns the path.
+- A file that exists at the parent and that the test commit only
+  changes is not run and not asked to fail (F15-3).
+- An error of the run: when the test command cannot start (it is not
+  found, so no exit code exists), `check` raises
+  `failing_first.RunError`, whose message names the file. It is never
+  counted as a failure of the test, so the check never passes on it.
+- Command line: the F14 command with
+  `--test-file-pattern "<pattern>"` (default `test_*.py`). It exits
+  non-zero and prints the path of each passing file. On an error of the
+  run it exits non-zero and prints the file and the words
+  `error of the run`, as F14 already does.
+- The reusable workflow takes the pattern as the input
+  `test-file-pattern` (default `test_*.py`) and passes it to the
+  command line. No unit test reads the workflow.
+- The JavaScript tests run with Node's own runner, `node --test <file>`
+  (`node` on the PATH; Node 24 locally, the runner's Node in CI). A
+  missing `node` fails these tests; they never skip.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F15-1 | A test commit adds `tests/unit/calc.test.js`, which passes at that commit; a later code commit | `check` returns a list that holds `tests/unit/calc.test.js`; the command exits non-zero and prints it |
+| F15-2 | A test commit adds `tests/unit/calc.test.js`, which fails at that commit (`add` throws); a later code commit makes it pass | `check` returns `[]`; the command exits `0` |
+| F15-3 | `tests/unit/old.test.js` is at `base`; a test commit only changes it, and it still passes | `check` returns `[]`; the command exits `0` |
+| F15-4 | With the pattern `test_*.py`, a test commit adds `tests/test_calc.py` with one failing and one passing function | `check` returns exactly `["tests/test_calc.py::test_already_passes"]`; the command exits non-zero and prints that ID and not the failing one |
+| F15-5 | A test commit adds `tests/unit/calc.test.js`; the test command is a program no machine has | `check` raises `RunError` naming the file; the command exits non-zero and prints the file and `error of the run` |
+
+Open: how the check knows that a file of another language holds no
+test (the second half of F15-5). Node's runner, for example, exits `0`
+for such a file and counts it as one passing test. F15-5 tests only the
+command that cannot start until this is decided.
+
 ## F13: Requirement-to-test report (`flowchecks.requirements`)
 
 The check is a module of the `flowchecks/` package, with the same shape
