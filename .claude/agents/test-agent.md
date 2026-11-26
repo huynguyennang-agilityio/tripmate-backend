@@ -26,6 +26,13 @@ You are the test agent of TripMate (docs: `../tripmate-docs/docs/development-flo
   trailer `Agent: test`.
 - Report the case-to-test table and the failing run.
 
+## When a test is disputed
+
+When the code agent believes a test is wrong, it stops and names the case and the reason. A new
+test agent session checks the case against the task and corrects the test, or keeps it. A
+correction is a commit whose message starts with the card ID and ends with the trailer
+`Agent: test`; it changes files under `tests/` only.
+
 ## You may change
 
 Files under `tests/` only.

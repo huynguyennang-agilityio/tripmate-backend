@@ -1,0 +1,292 @@
+# The flow checks of development-flow.md, section 2.3 (EPIC-11 spec, section 2.12), as one
+# reusable workflow. Every code repository calls it from a `pull_request` workflow, with its own
+# path list and test command; see `.github/workflows/flow.yml` for the backend's call.
+#
+# Four jobs, each one required check on `main`. The job `name` is the check's name; in a caller
+# whose job is `flow` the check is shown as `flow / <name>`, so keep both stable.
+#
+#   failing-first  a new test of the test commit (trailer `Agent: test`) passes before the code
+#   test-lock      a commit without the trailer changes, skips, or deletes a locked test
+#   mutation       a changed rule file has a surviving mutant the PR description does not list
+#                  (backend only: `run-mutation`; skipped, and so green, when it is off)
+#   risk-gate      a High path changed and the PR has no `human-approved` label
+#                  (see `run-risk-gate`: the backend runs the gate from risk-gate-check.yml)
+#
+# Where the checks' code comes from. The code is the `flowchecks/` folder of
+# `flowchecks-repository`, checked out at `flowchecks-ref` into `.flowchecks-src/`. `github.workflow_sha`
+# cannot be used for this: in a reusable workflow it names the caller's commit, not this file's.
+# A caller in another repository must therefore pin the ref (a tag or a full commit SHA of
+# tripmate-backend, so the checks only change when the caller changes the pin). The backend's own
+# caller passes the pull request's BASE commit, so the checks that judge a pull request are the
+# ones already on `main`: a pull request cannot weaken the check that reviews it. The repository
+# is public, so the default token is enough to read it.
+#
+# A `pull_request` run uses the workflow files of the pull request itself, so a pull request can
+# edit this file or the caller. That is why the risk gate, which makes those edits need
+# `human-approved`, runs from risk-gate-check.yml on `pull_request_target` (a workflow of the base
+# branch) and not from here.
+#
+# Not usable from a `pull_request_target` or `push` workflow: the jobs read the pull request's
+# base, head, labels, and description from the `pull_request` event.
+name: Flow checks
+
+on:
+  workflow_call:
+    inputs:
+      rules-file:
+        description: The caller's path list (TOML), relative to its repository root
+        type: string
+        required: true
+      test-command:
+        description: Command that runs tests; a test ID is appended (for example `uv run pytest`)
+        type: string
+        required: true
+      setup-command:
+        description: Shell command that installs the caller's dependencies (for example `uv sync --locked`)
+        type: string
+        default: ""
+      run-mutation:
+        description: Run the mutation check (backend only; needs a Python project with mutmut)
+        type: boolean
+        default: false
+      databases:
+        description: Start PostgreSQL 16 and Redis 7 for failing-first, with the `_test` database and TEST_* settings of ci.yml
+        type: boolean
+        default: false
+      run-risk-gate:
+        description: Run the risk-gate job here, in a workflow the pull request can edit. Off by default; call risk-gate-check.yml from a pull_request_target workflow instead, which the pull request cannot change (the backend does).
+        type: boolean
+        default: false
+      flowchecks-ref:
+        description: Tag or full commit SHA of flowchecks-repository to run the checks from
+        type: string
+        required: true
+      flowchecks-repository:
+        description: Repository that holds the `flowchecks/` package
+        type: string
+        default: huynguyennang-agilityio/tripmate-backend
+
+permissions:
+  contents: read
+
+jobs:
+  failing-first:
+    name: failing-first
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # `uv run` inside the worktree of the test commit reuses the environment of this checkout.
+      UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
+    steps:
+      - name: Needs a pull request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "::error::The flow checks run on pull_request events only, not $EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.flowchecks-repository }}
+          ref: ${{ inputs.flowchecks-ref }}
+          path: .flowchecks-src
+          sparse-checkout: flowchecks
+          persist-credentials: false
+      - name: Keep the checks' code out of the caller's tree
+        run: echo "/.flowchecks-src/" >> .git/info/exclude
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - name: Install the caller's dependencies
+        if: ${{ inputs.setup-command != '' }}
+        env:
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: bash -c "$SETUP_COMMAND"
+      - name: Start PostgreSQL 16 and Redis 7
+        # Real services, so a test that errors only because the database is absent does not
+        # make this check pass. Same database name and settings as the integration job of ci.yml.
+        if: ${{ inputs.databases }}
+        run: |
+          docker run -d --name postgres -p 5432:5432 \
+            -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=tripmate_test postgres:16
+          docker run -d --name redis -p 6379:6379 redis:7
+          # The PostgreSQL image starts, stops, and starts again while it initialises: wait for
+          # the second "ready" before the first test connects.
+          for _ in $(seq 1 60); do
+            ready="$(docker logs postgres 2>&1 | grep -c 'database system is ready to accept connections' || true)"
+            if [ "$ready" -ge 2 ] && docker exec postgres pg_isready -U postgres -d tripmate_test; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec postgres pg_isready -U postgres -d tripmate_test
+          for _ in $(seq 1 30); do
+            if docker exec redis redis-cli ping | grep -q PONG; then break; fi
+            sleep 1
+          done
+          docker exec redis redis-cli ping
+          echo "TEST_DATABASE_URL=postgresql+asyncpg://postgres@127.0.0.1:5432/tripmate_test" >> "$GITHUB_ENV"
+          echo "TEST_REDIS_URL=redis://127.0.0.1:6379/0" >> "$GITHUB_ENV"
+      - name: Failing first
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          cd .flowchecks-src
+          uv run --no-project --python 3.13 python -m flowchecks.failing_first \
+            --repo "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --test-command "$TEST_COMMAND"
+
+  test-lock:
+    name: test-lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Needs a pull request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "::error::The flow checks run on pull_request events only, not $EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.flowchecks-repository }}
+          ref: ${{ inputs.flowchecks-ref }}
+          path: .flowchecks-src
+          sparse-checkout: flowchecks
+          persist-credentials: false
+      - name: Keep the checks' code out of the caller's tree
+        run: echo "/.flowchecks-src/" >> .git/info/exclude
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - name: Test lock
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          cd .flowchecks-src
+          uv run --no-project --python 3.13 python -m flowchecks.test_lock \
+            --repo "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  mutation:
+    name: mutation
+    # Skipped when off; a skipped job counts as passed for a required check.
+    if: ${{ inputs.run-mutation }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Needs a pull request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "::error::The flow checks run on pull_request events only, not $EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.flowchecks-repository }}
+          ref: ${{ inputs.flowchecks-ref }}
+          path: .flowchecks-src
+          sparse-checkout: flowchecks
+          persist-credentials: false
+      - name: Keep the checks' code out of the caller's tree
+        run: echo "/.flowchecks-src/" >> .git/info/exclude
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - name: Install the caller's dependencies
+        if: ${{ inputs.setup-command != '' }}
+        env:
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: bash -c "$SETUP_COMMAND"
+      - name: Mutation testing of the changed rule files
+        # The description is read as data from the event payload: never put it in a script.
+        # It runs in the caller's environment (mutmut is a dev dependency there), with the
+        # checks' code as the working directory.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RULES_FILE: ${{ inputs.rules-file }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-description.md"
+          cd .flowchecks-src
+          uv run --project "$GITHUB_WORKSPACE" python -m flowchecks.mutation \
+            --rules "$RULES_FILE" --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --description-file "$RUNNER_TEMP/pr-description.md"
+
+  risk-gate:
+    name: risk-gate
+    # Skipped when off. A skipped job counts as passed, so a repository that turns it off must
+    # require the check of risk-gate-check.yml and never this one.
+    if: ${{ inputs.run-risk-gate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Needs a pull request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "::error::The flow checks run on pull_request events only, not $EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.flowchecks-repository }}
+          ref: ${{ inputs.flowchecks-ref }}
+          path: .flowchecks-src
+          sparse-checkout: flowchecks
+          persist-credentials: false
+      - name: Keep the checks' code out of the caller's tree
+        run: echo "/.flowchecks-src/" >> .git/info/exclude
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - name: Risk gate
+        # The labels come from the event payload (no token needed) as data in an environment
+        # variable. A re-run of this job sees the labels of the original event, so the
+        # `labeled` and `unlabeled` types of the caller start a new run instead.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RULES_FILE: ${{ inputs.rules-file }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          label_args=()
+          while IFS= read -r label; do
+            if [ -n "$label" ]; then
+              label_args+=(--label "$label")
+            fi
+          done < <(printf '%s' "$LABELS_JSON" | jq -r '.[]')
+          cd .flowchecks-src
+          uv run --no-project --python 3.13 python -m flowchecks.risk_gate \
+            --rules "$RULES_FILE" --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" "${label_args[@]}"

@@ -1,0 +1,32 @@
+# Three of the four flow checks on every pull request to `main` (EPIC-11 spec, section 2.12):
+# `flow / failing-first`, `flow / test-lock`, and `flow / mutation`. They run the pull request's
+# own tests, so they run on `pull_request`. The fourth, the risk gate, is `gate / risk-gate` from
+# `risk-gate.yml` (`pull_request_target`), which a pull request cannot change. All four are
+# required on `main`; do not require `flow / risk-gate`, which is skipped here.
+# `edited` runs the checks again when the description changes (the surviving mutants).
+name: Flow
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  flow:
+    uses: ./.github/workflows/flow-checks.yml
+    with:
+      rules-file: .github/risk-paths.toml
+      test-command: uv run pytest
+      setup-command: uv sync --locked
+      run-mutation: true
+      databases: true
+      run-risk-gate: false
+      # This repository's own checks as they are on `main`, not as the pull request changes them.
+      flowchecks-ref: ${{ github.event.pull_request.base.sha }}

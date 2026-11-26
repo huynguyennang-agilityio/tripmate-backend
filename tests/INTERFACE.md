@@ -8,6 +8,10 @@ What the tests need from the code, and nothing more, card by card:
 - F3 Database session and migrations: from the EPIC-11 spec, sections
   2.2 (Transaction) and 4.2 (cases F3-1 to F3-5), in the sections whose
   names start with "F3".
+- F14 Flow checks and agent roles: from the EPIC-11 spec, section 2.12,
+  development-flow.md, sections 2.1 and 2.3, and the task's scope
+  (cases F14-1 to F14-11; F14-12 is a manual check), in the sections
+  whose names start with "F14".
 
 ## Running the tests
 
@@ -270,3 +274,208 @@ the platform after the handler returns and before the response.
   model is in `app/<temporary module>/models.py` (a module folder with
   `__init__.py` and `models.py`, no `api.py`), and adding it changes no
   shared file.
+
+## F14: Flow checks
+
+The checks are a typed Python package `flowchecks/` at the repository
+root (not under `app/`), one module per check. Each module has
+importable functions (below) and a command line,
+`python -m flowchecks.<name> ...`, run from the repository root, that
+exits with `0` when the check passes and with a non-zero code when it
+fails, and then prints (stdout or stderr) each thing that failed: the
+test IDs, the paths, or the mutants. The functions return that same
+list; an empty list is a pass.
+
+The checks are generic: the other code repositories call them with
+their own path list and test command, so nothing in them names
+`tripmate-backend`.
+
+The tests are in `tests/unit/flow/test_F14_*.py`, with their helpers in
+`tests/unit/flow/repo.py`.
+
+### F14: Commits under check
+
+- `repo` is the path of a git repository; `base` and `head` are git
+  revisions (a sha or a branch). The commits under check are those of
+  `base..head`.
+- A test commit is one whose message has the trailer `Agent: test`
+  (git's trailer syntax: the last paragraph of the message). Every other
+  commit is not a test commit.
+- A test is identified by its ID, `<path>::<function>`, where `<path>`
+  is the test file's path from the repository root, with `/`, for
+  example `tests/test_calc.py::test_adds_two_numbers`. That is pytest's
+  node ID for a module-level test function. The tests use only
+  module-level `def test_*` functions in files named `test_*.py`.
+- The tests build throwaway repositories under `tmp_path` with `git`
+  (local `user.name` and `user.email`), with a base commit holding
+  `calc.py`, `pytest.ini` (`pythonpath = .`), `.gitignore`
+  (`__pycache__/`, `.pytest_cache/`, `.hypothesis/`), and a test that
+  already passes, `tests/test_old.py`.
+
+### F14: Failing first (`flowchecks.failing_first`)
+
+```python
+from flowchecks import failing_first
+
+passing: list[str] = failing_first.check(repo, base, head, test_command)
+```
+
+- `repo`: `str | os.PathLike[str]`; `base`, `head`: `str`;
+  `test_command`: `Sequence[str]`, the command that runs tests, for
+  example `(sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider")`.
+- The tests a commit adds are the test IDs present after the test
+  commits and absent at `base`. The check checks out the last test
+  commit of `base..head` and runs each added test as
+  `test_command + [test ID]`, from the repository root of that
+  checkout. A non-zero exit is a failure or an error, as the rule asks;
+  `0` is a pass.
+- It returns the IDs of the added tests that passed (F14-2), in any
+  order, and `[]` when every added test failed or errored (F14-1) or
+  when `base..head` has no test commit (F14-5). Tests already at `base`
+  are not run.
+- Where the checkout happens (the repository itself or a separate
+  worktree) is left to the code; the tests' repositories are thrown
+  away after each test.
+- Command line:
+  `python -m flowchecks.failing_first --repo <dir> --base <rev> --head <rev> --test-command "<command>"`,
+  where `<command>` is split as a shell would (`shlex.split`).
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F14-1 | The test commit adds one test that fails (`add` raises) and one whose module fails to import (`multiply` is missing); a later code commit makes both pass at the head | `check` returns `[]`; the command exits `0` |
+| F14-2 | The test commit adds a failing test and `tests/test_trivial.py::test_already_passes`, which passes at that commit | `check` returns a list that holds that ID; the command exits non-zero and prints it |
+| F14-5 | One commit with no trailer that changes `README.md` and adds `docs/guide.md` | `check` returns `[]`; the command exits `0` |
+
+### F14: Test lock (`flowchecks.test_lock`)
+
+```python
+from flowchecks import test_lock
+
+broken: list[str] = test_lock.check(repo, base, head)
+```
+
+- The locked tests are those the test commits of `base..head` added
+  (absent at `base`). A locked test is broken when a later commit that
+  is not a test commit changes its function (its body or its
+  decorators), skips it, or deletes it, or deletes its file. A later
+  test commit may change it.
+- A test is skipped when a later commit adds a skip marker to it: on
+  the function (`@pytest.mark.skip(...)`) or for the whole file
+  (`pytestmark = pytest.mark.skip(...)`).
+- It returns the IDs of the broken locked tests, in any order, and
+  `[]` when none is broken or when there is no test commit.
+- Command line:
+  `python -m flowchecks.test_lock --repo <dir> --base <rev> --head <rev>`.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F14-3 | Test commit adds `tests/test_calc.py` with `test_adds_two_numbers` and `test_adds_zero`; a code commit; then a commit with no trailer that (each in turn) edits the first test's assertion, adds `@pytest.mark.skip` to it, adds a module-level `pytestmark` skip, deletes the function, or deletes the file | `check` returns a list holding `tests/test_calc.py::test_adds_two_numbers`; the command exits non-zero and prints it |
+| F14-4 | The same, but the edit is in a commit with the trailer, followed by a code commit that leaves the test alone | `check` returns `[]`; the command exits `0` |
+| F14-5 | As for failing first | `check` returns `[]`; the command exits `0` |
+
+### F14: The path list
+
+- The backend's path list is `.github/risk-paths.toml`. Each repository
+  that calls the checks has its own file and passes its path.
+- It is TOML: an array of tables `rule`, each with `glob` (string) and
+  `level` (`"High"`, `"Medium"`, or `"Low"`, the levels of
+  development-flow.md, section 2.1), and an optional `reason`
+  (string) the checks do not read:
+
+  ```toml
+  [[rule]]
+  glob = "migrations/**"
+  level = "High"
+  reason = "A migration or a table"
+
+  [[rule]]
+  glob = "app/money/splits.py"
+  level = "Medium"
+  reason = "Rule file: splits.allocate"
+  ```
+
+- A glob is matched against the path from the repository root, with
+  `/`, as `pathlib.PurePosixPath(path).full_match(glob)` does: `*` stays
+  within one folder, `**` matches any number of folders, none included
+  (`**/CLAUDE.md` matches `CLAUDE.md` and `app/trips/CLAUDE.md`).
+- A path's level is the highest level of the rules that match it. A
+  path no rule matches is `"High"` (F14-10).
+- A `"Medium"` rule names a rule file: the pure-function files of
+  architecture.md, section 4 ("Where each domain rule lives"), for
+  example `app/money/splits.py`. A path is a rule file when any
+  `"Medium"` rule matches it, whatever other rules also match it.
+- The backend's file holds the High items of development-flow.md,
+  section 2.1, and also names, as High: itself
+  (`.github/risk-paths.toml`), the workflows (`.github/workflows/**`),
+  every `CLAUDE.md`, and the agent roles (`.claude/agents/**`) (F14-9).
+  The tests also rely on it giving `migrations/versions/<file>.py` the
+  level High (F14-7) and `app/trips/service.py` a level below High
+  (F14-6, one module), and on `app/money/splits.py` being a rule file
+  (F14-11).
+
+### F14: Risk gate (`flowchecks.risk_gate`)
+
+```python
+from flowchecks import risk_gate
+
+rules = risk_gate.load_rules(path)                   # the path list above
+level: str = risk_gate.level_of("CLAUDE.md", rules)  # "High", "Medium" or "Low"
+needing: list[str] = risk_gate.check(changed, rules, labels)
+```
+
+- `load_rules(path: str | os.PathLike[str])` reads a path list file;
+  the tests pass its result back to the other functions without looking
+  inside it.
+- `check(changed: Iterable[str], rules, labels: Iterable[str])`:
+  `changed` are the changed paths from the repository root; `labels`
+  the pull request's labels. When `human-approved` is among the labels
+  it returns `[]`; otherwise it returns the changed paths whose level is
+  `"High"`, in any order, and no other path.
+- Command line:
+  `python -m flowchecks.risk_gate --rules <file> --repo <dir> --base <rev> --head <rev> [--label <label> ...]`.
+  The changed paths are the files that differ between `base` and `head`
+  (`git diff --name-only <base>...<head>`).
+
+| Case | Path list | Changed | Labels | Expected |
+|------|-----------|---------|--------|----------|
+| F14-6 | Own: `migrations/**`, `app/platform/**` High; `app/trips/**`, `tests/unit/trips/**`, `README.md` Low | `app/trips/service.py`, `app/trips/api.py`, `tests/unit/trips/test_trips.py` | none | `[]`; command exits `0` |
+| F14-6 | Backend | `app/trips/service.py` | none | `[]` |
+| F14-7 | Own | `migrations/versions/0002_add_trips.py`, `app/trips/service.py` | none | holds the migration, not the service file; command exits non-zero and prints the migration |
+| F14-7 | Backend | the migration | none | holds the migration |
+| F14-8 | Own | as F14-7 | `human-approved` | `[]`; command exits `0` |
+| F14-9 | Backend | each of `.github/risk-paths.toml`, `.github/workflows/ci.yml`, `.github/workflows/flow-checks.yml`, `CLAUDE.md`, `app/trips/CLAUDE.md`, `.claude/agents/test-agent.md`, `.claude/agents/code-agent.md` | none, then `human-approved` | `level_of` is `"High"`; holds the path; with the label `[]` |
+| F14-10 | Own | `scripts/new_tool.sh` (no rule), `README.md` | none, then `human-approved` | `level_of` is `"High"`; holds it; with the label `[]`; command exits non-zero and prints it |
+
+### F14: Mutation (`flowchecks.mutation`)
+
+```python
+from flowchecks import mutation
+
+shown: list[str] = mutation.check(changed, rules, pr_description, run_mutants)
+```
+
+- `changed`: the changed paths; `rules`: from `risk_gate.load_rules`;
+  `pr_description`: the pull request description (Markdown text);
+  `run_mutants: Callable[[Sequence[str]], Iterable[str]]`.
+- The check finds the changed rule files (the path list's `"Medium"`
+  rules) and calls `run_mutants` once with them (paths from the
+  repository root, in any order). `run_mutants` runs mutation testing on
+  those files and returns the names of the surviving mutants. The tests
+  give it a stand-in that returns mutmut 3 style names such as
+  `app.money.splits.x_allocate__mutmut_3`; the command line uses a
+  runner that runs mutmut and reads its results.
+- A surviving mutant is listed when the description has a
+  `## Surviving mutants` section (from that heading to the next `## `
+  heading or the end) with a line `- <mutant name>: <reason>`, the
+  reason not empty (task scope, version 1.2).
+- It returns the surviving mutants that are not listed, in any order;
+  `[]` when every survivor is listed.
+- Command line (not run by the tests, since it runs mutmut):
+  `python -m flowchecks.mutation --rules <file> --repo <dir> --base <rev> --head <rev> --description-file <file>`,
+  which prints each mutant it returns.
+
+| Case | Changed | Survivors | Description | Expected |
+|------|---------|-----------|-------------|----------|
+| F14-11 | `app/money/splits.py` (own list: Medium), `README.md` | `app.money.splits.x_allocate__mutmut_3` | No `## Surviving mutants` section; the section lists only another mutant; the line names it with no reason; it is listed with a reason only under `## Notes` | Holds the mutant; `run_mutants` called once with `["app/money/splits.py"]` |
+| F14-11 | The same | The same | The section lists it with a reason | `[]` |
+| F14-11 | The same, with the backend's path list | The same | No section | Holds the mutant; `run_mutants` called with `["app/money/splits.py"]` |

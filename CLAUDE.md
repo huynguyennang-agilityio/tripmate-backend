@@ -43,7 +43,7 @@ several machines".
 |------|---------|
 | Tests | `TEST_DATABASE_URL=postgresql+asyncpg://tripmate@127.0.0.1:5432/tripmate_test TEST_REDIS_URL=redis://127.0.0.1:6379/0 uv run pytest tests -q` |
 | Lint and format | `uv run ruff check .` and `uv run ruff format --check .` |
-| Types | `uv run mypy app` |
+| Types | `uv run mypy app flowchecks` |
 | Module boundaries | `uv run lint-imports` |
 | Local PostgreSQL and Redis | `docker compose up -d` |
 | One process, from the repository root | `python -m app.main`, `python -m app.worker`, `python -m app.scheduler` (the image's default command is the API) |
@@ -61,7 +61,7 @@ every push to `main`. Each job is a check that is required on `main`
 | Job | Runs |
 |-----|------|
 | `lint` | `ruff check .` and `ruff format --check .` |
-| `types` | `mypy app` |
+| `types` | `mypy app flowchecks` |
 | `unit` | `pytest tests/unit` (unit and property tests) |
 | `integration` | `pytest tests --ignore=tests/unit` (everything but the unit tests) against PostgreSQL 16 and Redis 7 service containers |
 | `imports` | `lint-imports` |
@@ -70,8 +70,86 @@ every push to `main`. Each job is a check that is required on `main`
 | `secrets` | gitleaks over the commits of the change and the checked-out files |
 | `image` | `docker build` of the `Dockerfile`, no push |
 
-Checks of later cards join this file in their own cards. Third-party
+The four flow checks are in `.github/workflows/flow.yml` (a call of the
+reusable `flow-checks.yml`) and `risk-gate.yml` (section "Flow checks"). Checks of later cards
+join these files in their own cards. Third-party
 actions are pinned to a full commit SHA with the version in a comment.
+
+## Flow checks
+
+`.github/workflows/flow.yml` runs the four checks of development-flow.md,
+section 2.3, on every pull request to `main` (EPIC-11 spec, section 2.12).
+The code is the `flowchecks/` package (`failing_first`, `test_lock`,
+`mutation`, `risk_gate`), offered to the other code repositories as the
+reusable workflow `.github/workflows/flow-checks.yml`.
+
+The checks that judge a pull request are never the pull request's own:
+`flow.yml` (on `pull_request`, so it can run the head's tests) runs the
+`flowchecks` code of the base commit, and the risk gate is its own workflow,
+`.github/workflows/risk-gate.yml` on `pull_request_target`, a file the pull
+request cannot edit. It checks out only the base, fetches the head's objects,
+and diffs them; it never runs anything from the head (the header of
+`risk-gate-check.yml` explains why that is safe). The four required checks on
+`main` are exactly `flow / failing-first`, `flow / test-lock`,
+`flow / mutation`, and `gate / risk-gate`. `flow / risk-gate` exists but is
+always skipped here; never require it.
+
+| Check | Fails when |
+|-------|------------|
+| `failing-first` | A test that a test commit (trailer `Agent: test`) adds passes at that commit. Each test commit is checked out and run in turn; a commit that only changes tests is not asked to fail. Pytest exit 1 or 2 counts as failing first, and so does exit 4 when its output has `ERROR collecting <the test's own file>` (a test ID whose module fails to import); any other exit, such as a crashing `conftest.py`, is an error of the run and fails the check. Runs against PostgreSQL 16 and Redis 7. |
+| `test-lock` | A commit without the trailer changes, skips, or deletes a locked test (its function or method, with the module and class context it uses: imports, constants, helpers, `pytestmark`) or a locked support file; the head is compared with the last locked state too, so a merge cannot hide a change. A test commit that touches a path outside `tests/` fails too, and so does any commit without the trailer that adds, changes, or deletes a `conftest.py` at any depth (also one that came from `main`), and so does a merge commit that leaves any `conftest.py` different from its text at the last test commit that touched it (or at the merge base); a needed change goes through the test agent. A new test a code commit adds is not locked. |
+| `mutation` | A changed rule file has a surviving, untested, or unchecked mutant (mutmut), or gains a `# pragma: no mutate` or `no cover`, that the pull request description does not list |
+| `risk-gate` | A High path changed and the pull request has no `human-approved` label |
+
+- The path list is `.github/risk-paths.toml`: `[[rule]]` tables with a
+  `glob`, a `level` (High, Medium, or Low), and a `reason`. The highest level
+  of the matching rules applies; a path no rule names is High. The path list,
+  `.github/workflows/**`, every `CLAUDE.md`, and `.claude/agents/**` are High
+  whatever the file says. Its Medium rules name the rule files of
+  architecture.md, section 4, the files mutation testing runs on.
+- `human-approved`: only the product owner adds this label to a pull
+  request, to approve a High change. Claude Code never adds it. A push to the
+  pull request removes it (the gate's job `revoke-approval`, on
+  `synchronize` only; `labeled`, `unlabeled`, and `edited` never do), and the
+  gate then judges that push as unapproved; the product owner adds the label
+  again after reading the new commits. On every event the gate also counts the
+  label only when its last `labeled` timeline event is later than the head
+  commit's arrival on the pull request
+  (`flowchecks.risk_gate.approval_is_fresh`). The arrival is a time GitHub sets,
+  never a commit date: the earliest GitHub Actions check suite of the head
+  commit for this pull request (created when the push arrives; a suite on
+  another branch does not count), or a later `head_ref_force_pushed` time. When
+  that cannot be read the label does not count. The gate reads the timeline and
+  the check suites with `pull-requests: read` and `checks: read`, and runs
+  nothing from the head. The removal at the push stays as the exact signal, and
+  a push run is never cancelled by a later `edited`, `labeled`, or `unlabeled`
+  run (its own concurrency group).
+- Which paths are High: the list of development-flow.md, section 2.1, as
+  `.github/risk-paths.toml` maps it, including each module's `schemas.py`,
+  `api.py`, and `events.py`, all of `app/platform/`, `app/main.py`,
+  `app/worker.py`, `app/scheduler.py`, and `tests/requirement-ids.txt`.
+- A surviving mutant is listed in the pull request description under
+  `## Surviving mutants`, one line each: `- <mutant name>: <reason>` (the
+  name as mutmut prints it, for example `app.money.splits.x_allocate__mutmut_3`).
+  A pragma added to a rule file is listed as `- <path>#pragma: <reason>`.
+  Editing the description runs the check again.
+- The lock covers test functions and the `test*` methods of `Test*` classes
+  (`path::TestX::test_y`), and every other file under `tests/` that a test
+  commit added or changed (`conftest.py`, helpers, data). Known limits: helper
+  methods inside a class, and fixtures or helpers outside `tests/`, are not
+  locked; a file only a code commit added under `tests/` is not locked.
+- A fix to `flowchecks/` (or to the workflows) is judged by the code of the
+  base commit, so a change that repairs a broken check is judged by the broken
+  check. When that check blocks the fix, the product owner merges with an admin
+  merge after reading the diff.
+- Run one check by hand from the repository root, for example
+  `uv run python -m flowchecks.risk_gate --rules .github/risk-paths.toml --repo . --base origin/main --head HEAD`.
+- Other repositories call `flow-checks.yml` with their own path list and test
+  command, and pin `flowchecks-ref` to a tag or commit of this repository
+  (the header of the workflow explains why). They run the risk gate as the
+  backend does: `run-risk-gate` is false by default, and a
+  `pull_request_target` workflow calls `risk-gate-check.yml` (its caller job
+  needs `pull-requests: write` for the label removal).
 
 ## Settings
 

@@ -62,6 +62,8 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S", "N"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+# The flow checks run git and the repository's own test and mutation commands.
+"flowchecks/**" = ["S603", "S607"]
 # Tests use assert, and their names carry requirement IDs such as F1_1.
 "tests/**" = ["S101", "S603", "S607", "N802", "N999"]
 
@@ -75,8 +77,15 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
+# Mutation testing of the rule files (flowchecks.mutation runs `mutmut run` from here).
+[tool.mutmut]
+source_paths = ["app"]
+pytest_add_cli_args_test_selection = ["tests/unit"]
+# The tests of the flow checks build git repositories and test no rule file.
+pytest_add_cli_args = ["--ignore=tests/unit/flow"]
+
 [tool.importlinter]
-root_package = "app"
+root_packages = ["app", "flowchecks"]
 
 # `platform` imports no module and no process (EPIC-11 spec, section 2.1).
 # Modules register with it instead, and it finds them by scanning `app/`.
@@ -109,3 +118,10 @@ name = "no cycles between modules"
 type = "acyclic_siblings"
 ancestors = ["app"]
 depth = 1
+
+# The flow checks are generic: other repositories run them, so they know no module of the app.
+[[tool.importlinter.contracts]]
+name = "flowchecks imports nothing of the app"
+type = "forbidden"
+source_modules = ["flowchecks"]
+forbidden_modules = ["app"]

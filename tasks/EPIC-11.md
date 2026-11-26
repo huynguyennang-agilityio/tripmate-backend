@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.1
+**Version:** 1.4
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -157,7 +157,13 @@ Shown once on a throwaway pull request for each case.
 
 - Failing first, test lock, mutation, and the risk gate as scripts with their own tests, in one reusable workflow that the other code repositories call with their own path list and test command.
 - All four required on `main` in `tripmate-backend`.
+- A surviving mutant counts as listed when the pull request description has a `## Surviving mutants` section with one line that names it and gives a reason; editing the description runs the check again.
 - The backend path list for the High items of development-flow.md, section 2.1; the path list, the workflows, each `CLAUDE.md`, and the agent roles are on it; a path no rule names counts as High.
+- On the backend path list, each module's `schemas.py`, `api.py`, and `events.py`, all of `app/platform/`, and `app/main.py`, `app/worker.py`, and `app/scheduler.py` are High.
+- Failing first checks out each test commit and runs the tests that commit adds; a test commit that only changes existing tests, such as a correction after the code, is not asked to fail.
+- A push to a pull request that has the label `human-approved` removes the label; the product owner adds it again after reading the new commits.
+- The risk gate counts `human-approved` only when the label was last added after the newest commit reached the pull request, on every event.
+- A commit without the trailer `Agent: test` that adds or changes any `conftest.py` breaks the test lock.
 - The label `human-approved` exists.
 - The four agent roles in `.claude/agents/` match development-flow.md, section 2.3: test, code, test-check, and diff review.
 
@@ -742,3 +748,6 @@ None.
 |---------|------|---------|
 | 1.0 | 2026-11-25 | First version: the 14 tasks of EPIC-11 in this repository, moved from the EPIC-11 spec, sections 6 and 7, with scope, what each leaves out, the reason for its risk level, and its manual checks. The skeleton tasks write four agent roles, as development-flow.md now says. |
 | 1.1 | 2026-11-25 | F14 manual checks: F14-12 names the four role files, as its test case does. |
+| 1.2 | 2026-11-26 | F14 scope: where a pull request lists a surviving mutant, a `## Surviving mutants` section of its description, as the product owner decided. |
+| 1.3 | 2026-11-26 | F14 scope, as the product owner decided after review round 1: the contract, access, and platform files are High on the backend path list; failing first checks each test commit; a push removes `human-approved`. |
+| 1.4 | 2026-11-26 | F14 scope, as the product owner decided after review round 2: the label counts only when added after the newest commit; any `conftest.py` change outside a test commit breaks the test lock. |

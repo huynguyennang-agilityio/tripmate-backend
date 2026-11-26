@@ -1,0 +1,184 @@
+# The risk gate (development-flow.md, section 2.1) as its own reusable workflow, to be called from
+# a `pull_request_target` workflow (see `risk-gate.yml`). One job, `risk-gate`.
+#
+# Why `pull_request_target`, and why it is safe here. A `pull_request` run takes its workflow
+# files from the pull request, so a pull request could edit the gate (or the checks' code) and
+# pass without `human-approved`. A `pull_request_target` run takes its workflow files, and a local
+# `./.github/workflows/...` reusable workflow, from the base branch, which the pull request cannot
+# change. The usual danger of that event is running the pull request's code with a token or
+# secrets. Nothing of the head is run here: the job checks out the BASE commit only, fetches the
+# head commit's objects with `git fetch` (never `checkout`), and lists the changed paths with
+# `git diff`. The code that runs is the base checkout's workflow and the `flowchecks` package at
+# `flowchecks-ref` (the caller passes the base commit). The path list is read from the base
+# checkout too. There are no secrets, and `permissions: contents: read` (the one job that also has
+# `pull-requests: write` runs nothing from the pull request). The pull request's fields
+# reach the scripts only through `env:`.
+#
+# An approval is fresh only when added after the head commit reached the pull request. On every
+# event the gate reads the timeline and the check suites of the head commit, and counts
+# `human-approved` only when its last `labeled` event is later than the arrival of the head
+# commit. The arrival is a time GitHub sets, never a commit date (a commit made before the label
+# but pushed after it would look old, and a future-dated one would block approval): the earliest
+# GitHub Actions check suite of the head commit for this pull request (created when the push
+# arrives; a suite on another branch does not count, the commit may have been pushed there
+# earlier), or the time of a force push (`head_ref_force_pushed`) when later. When no such suite
+# can be read the label does not count. The removal below stays as the exact signal at the push,
+# and the caller keeps the push run from being cancelled by a later event.
+#
+# An approval ends with a push. On `synchronize`, when the pull request carries `human-approved`,
+# the job `revoke-approval` removes the label (the only job with `pull-requests: write`; it
+# checks out and runs nothing, and only calls the REST API with the token) and the gate then
+# judges the pull request as unapproved: a High path fails it, and the product owner adds the
+# label again after reading the new commits. The removal is made with `GITHUB_TOKEN`, which does
+# not start another run, so this run decides the result itself. `labeled`, `unlabeled`, and
+# `edited` never remove the label. The caller job needs `pull-requests: write` for this.
+#
+# The check is shown as `<caller job> / risk-gate`; for the backend, `gate / risk-gate`.
+name: Risk gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      rules-file:
+        description: The caller's path list (TOML), relative to its repository root, read at the base commit
+        type: string
+        required: true
+      flowchecks-ref:
+        description: Tag or full commit SHA of flowchecks-repository to run the gate from
+        type: string
+        required: true
+      flowchecks-repository:
+        description: Repository that holds the `flowchecks/` package
+        type: string
+        default: huynguyennang-agilityio/tripmate-backend
+
+permissions:
+  contents: read
+
+jobs:
+  revoke-approval:
+    name: revoke-approval
+    if: ${{ github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'human-approved') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Remove the label human-approved after a push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # A label that is already gone (404) is the state we want.
+          if ! out="$(gh api --method DELETE \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/human-approved" 2>&1)"; then
+            case "$out" in
+              *"HTTP 404"*) echo "The label was already removed." ;;
+              *) echo "$out"; exit 1 ;;
+            esac
+          fi
+          echo "A push removed human-approved; the product owner adds it again after reading the new commits."
+
+  risk-gate:
+    name: risk-gate
+    needs: revoke-approval
+    # Runs when the job above was skipped or succeeded; when the removal failed, the gate fails.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Read the pull request's timeline (when the label was added) and the check suites of the
+      # head commit (when it reached the pull request). Nothing is written.
+      pull-requests: read
+      checks: read
+    steps:
+      - name: The approval must have been removed when it had to be
+        env:
+          REVOKE_RESULT: ${{ needs.revoke-approval.result }}
+        run: |
+          if [ "$REVOKE_RESULT" = "failure" ]; then
+            echo "::error::Could not remove the label human-approved after a push."
+            exit 1
+          fi
+      - name: Needs a pull request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request_target" ] && [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "::error::The risk gate runs on pull request events only, not $EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The base commit, never the head. The repository is public, so the fetch below needs
+          # no credentials; a private repository would need a read token here.
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.flowchecks-repository }}
+          ref: ${{ inputs.flowchecks-ref }}
+          path: .flowchecks-src
+          sparse-checkout: flowchecks
+          persist-credentials: false
+      - name: Keep the checks' code out of the caller's tree
+        run: echo "/.flowchecks-src/" >> .git/info/exclude
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - name: Fetch the head commit's objects (no checkout)
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin "$HEAD_SHA" \
+            || git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          git cat-file -e "${HEAD_SHA}^{commit}"
+      - name: Read the timeline and the check suites of the head commit
+        # On every event, `human-approved` counts only when it was last added after the head
+        # commit reached the pull request (flowchecks.risk_gate.approval_is_fresh). Read-only.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" \
+            > "$RUNNER_TEMP/timeline.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/commits/${HEAD_SHA}/check-suites?per_page=100" \
+            > "$RUNNER_TEMP/check-suites.json"
+      - name: Risk gate
+        # The labels come from the event payload (no token needed) as data in an environment
+        # variable. A re-run of this job sees the labels of the original event, so the caller
+        # runs again on `labeled` and `unlabeled` instead.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RULES_FILE: ${{ inputs.rules-file }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # "success" when a push has just removed the approval: the payload still lists it.
+          REVOKE_RESULT: ${{ needs.revoke-approval.result }}
+        run: |
+          label_args=()
+          if [ "$REVOKE_RESULT" != "success" ]; then
+            while IFS= read -r label; do
+              if [ -n "$label" ]; then
+                label_args+=(--label "$label")
+              fi
+            done < <(printf '%s' "$LABELS_JSON" | jq -r '.[]')
+          fi
+          cd .flowchecks-src
+          uv run --no-project --python 3.13 python -m flowchecks.risk_gate \
+            --rules "$RULES_FILE" --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --timeline-file "$RUNNER_TEMP/timeline.json" \
+            --check-suites-file "$RUNNER_TEMP/check-suites.json" \
+            --pr-number "$PR_NUMBER" --head-ref "$HEAD_REF" "${label_args[@]}"

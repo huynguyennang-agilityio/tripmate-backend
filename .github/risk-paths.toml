@@ -1,0 +1,260 @@
+# Path list of the risk gate (EPIC-11 spec, section 2.12; development-flow.md, section 2.1).
+#
+# A changed path's level is the highest level of the rules that match it, so a High rule beats
+# a broader Low one. A path no rule matches counts as High. The flow checks also treat this file,
+# `.github/workflows/**`, every `CLAUDE.md`, and `.claude/agents/**` as High, whatever it says.
+#
+# Globs are matched from the repository root: `*` stays in one folder, `**` crosses folders.
+
+# ---- High: the list of development-flow.md, section 2.1 ----
+
+# The API contract and event schemas: each module's schemas (the contract is generated from
+# them), routes with their access declarations, and events; the shared platform (error format,
+# access, rate limits, idempotency, outbox, db, logging, module scan); and the processes.
+[[rule]]
+glob = "app/*/schemas.py"
+level = "High"
+reason = "API contract: request and response schemas"
+
+[[rule]]
+glob = "app/*/api.py"
+level = "High"
+reason = "API contract: routes and their access declarations"
+
+[[rule]]
+glob = "app/*/events.py"
+level = "High"
+reason = "Event schemas"
+
+[[rule]]
+glob = "app/platform/**"
+level = "High"
+reason = "Shared by every module; when the level is not clear it is High"
+
+[[rule]]
+glob = "app/main.py"
+level = "High"
+reason = "The request pipeline"
+
+[[rule]]
+glob = "app/worker.py"
+level = "High"
+reason = "A process"
+
+[[rule]]
+glob = "app/scheduler.py"
+level = "High"
+reason = "A process"
+
+# A migration or a table.
+[[rule]]
+glob = "migrations/**"
+level = "High"
+reason = "A migration"
+
+[[rule]]
+glob = "alembic.ini"
+level = "High"
+reason = "How migrations run"
+
+[[rule]]
+glob = "app/*/models.py"
+level = "High"
+reason = "A table"
+
+# Authentication, tokens, sessions, the access guard, or capabilities.
+[[rule]]
+glob = "app/identity/**"
+level = "High"
+reason = "Authentication, tokens, sessions"
+
+[[rule]]
+glob = "app/platform/access.py"
+level = "High"
+reason = "The access guard and capabilities"
+
+# A money calculation: Expenses, Balances, the Settlement plan.
+[[rule]]
+glob = "app/money/**"
+level = "High"
+reason = "A money calculation"
+
+# The assistant's prompts, tools, schemas, or model settings.
+[[rule]]
+glob = "app/assistant/**"
+level = "High"
+reason = "The assistant's prompts, tools, schemas, model settings"
+
+# A dependency.
+[[rule]]
+glob = "pyproject.toml"
+level = "High"
+reason = "Dependencies and tool settings"
+
+[[rule]]
+glob = "uv.lock"
+level = "High"
+reason = "Locked dependencies"
+
+[[rule]]
+glob = ".python-version"
+level = "High"
+reason = "The Python version of the image and CI"
+
+# Hosting, the image, or how secrets are read.
+[[rule]]
+glob = "Dockerfile"
+level = "High"
+reason = "The image"
+
+[[rule]]
+glob = ".dockerignore"
+level = "High"
+reason = "What goes into the image"
+
+[[rule]]
+glob = "compose.yaml"
+level = "High"
+reason = "The local stack"
+
+[[rule]]
+glob = "render.yaml"
+level = "High"
+reason = "Hosting"
+
+[[rule]]
+glob = "docker/**"
+level = "High"
+reason = "Local stack setup"
+
+[[rule]]
+glob = "app/platform/config.py"
+level = "High"
+reason = "How secrets and settings are read"
+
+[[rule]]
+glob = ".env.example"
+level = "High"
+reason = "The list of settings"
+
+# A CI workflow, a check of development-flow.md, section 2.3, a CLAUDE.md, an agent role.
+[[rule]]
+glob = ".github/**"
+level = "High"
+reason = "CI workflows and this path list"
+
+[[rule]]
+glob = "flowchecks/**"
+level = "High"
+reason = "The flow checks"
+
+[[rule]]
+glob = "**/CLAUDE.md"
+level = "High"
+reason = "A CLAUDE.md"
+
+[[rule]]
+glob = ".claude/agents/**"
+level = "High"
+reason = "An agent role"
+
+# ---- Medium: the rule files of architecture.md, section 4 ----
+# Mutation testing runs on a changed rule file. The money rule files and access.py are High
+# above as well; they are listed here so that they are rule files too.
+
+[[rule]]
+glob = "app/trips/lifecycle.py"
+level = "Medium"
+reason = "Rule file: lifecycle.next_state"
+
+[[rule]]
+glob = "app/decisions/voting.py"
+level = "Medium"
+reason = "Rule file: voting.outcome, voting.outdated_by"
+
+[[rule]]
+glob = "app/decisions/similarity.py"
+level = "Medium"
+reason = "Rule file: similarity.find_similar"
+
+[[rule]]
+glob = "app/itinerary/feasibility.py"
+level = "Medium"
+reason = "Rule file: feasibility.evaluate, feasibility.group_budget"
+
+[[rule]]
+glob = "app/money/splits.py"
+level = "Medium"
+reason = "Rule file: splits.allocate"
+
+[[rule]]
+glob = "app/money/balances.py"
+level = "Medium"
+reason = "Rule file: balances.compute"
+
+[[rule]]
+glob = "app/money/settlement.py"
+level = "Medium"
+reason = "Rule file: settlement.hub_plan"
+
+[[rule]]
+glob = "app/readiness/gaps.py"
+level = "Medium"
+reason = "Rule file: gaps.compute"
+
+[[rule]]
+glob = "app/readiness/nudges.py"
+level = "Medium"
+reason = "Rule file: nudges.due"
+
+[[rule]]
+glob = "app/platform/access.py"
+level = "Medium"
+reason = "Rule file: access.capabilities"
+
+# ---- Low: ordinary code, tests, tasks, and plain documents ----
+
+[[rule]]
+glob = "app/*/**"
+level = "Low"
+reason = "Ordinary code of one module"
+
+[[rule]]
+glob = "app/__init__.py"
+level = "Low"
+reason = "Package marker"
+
+[[rule]]
+glob = "tests/requirement-ids.txt"
+level = "High"
+reason = "The P0 requirement IDs in scope: removing one hides a missing test"
+
+[[rule]]
+glob = "tests/**"
+level = "Low"
+reason = "Tests"
+
+[[rule]]
+glob = "tasks/**"
+level = "Low"
+reason = "Task files and notes"
+
+[[rule]]
+glob = "docs/**"
+level = "Low"
+reason = "Plain documents"
+
+[[rule]]
+glob = "README.md"
+level = "Low"
+reason = "Plain document"
+
+[[rule]]
+glob = ".gitignore"
+level = "Low"
+reason = "Repository housekeeping"
+
+[[rule]]
+glob = ".gitattributes"
+level = "Low"
+reason = "Repository housekeeping"
