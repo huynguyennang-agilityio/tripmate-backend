@@ -1,0 +1,93 @@
+# Publishes the contract (EPIC-11 spec, section 2.10; card F12).
+#
+# Runs only on a push to `main`, and its one job uses the GitHub environment `contracts`,
+# which only `main` may deploy from. `CONTRACTS_TOKEN` is a secret of that environment, so
+# a branch that edits this file can neither run the job nor read the token.
+#
+# The job generates `openapi.json` and compares it with `main` of `tripmate-contracts`. No
+# difference: nothing is pushed and no pull request is opened. A difference: one commit on
+# the fixed branch `backend/openapi` (force-updated), and a pull request from that branch
+# (opened when none is open, updated otherwise).
+name: Publish contract
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-contract
+  cancel-in-progress: false
+
+env:
+  UV_LOCKED: "1"
+  CONTRACTS_REPO: huynguyennang-agilityio/tripmate-contracts
+  CONTRACTS_BRANCH: backend/openapi
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: contracts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.7"
+      - run: uv sync
+      - name: Generate openapi.json
+        run: uv run python -m app.platform.contract generate "$RUNNER_TEMP/openapi.json"
+      - name: Check out tripmate-contracts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.CONTRACTS_REPO }}
+          ref: main
+          path: contracts
+          token: ${{ secrets.CONTRACTS_TOKEN }}
+          persist-credentials: false
+      - name: Compare with main of tripmate-contracts
+        id: compare
+        run: |
+          if cmp -s "$RUNNER_TEMP/openapi.json" contracts/openapi.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "openapi.json is the same as on main of tripmate-contracts: nothing to publish."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Push the branch
+        if: steps.compare.outputs.changed == 'true'
+        working-directory: contracts
+        env:
+          GH_TOKEN: ${{ secrets.CONTRACTS_TOKEN }}
+          BACKEND_SHA: ${{ github.sha }}
+        run: |
+          gh auth setup-git
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$CONTRACTS_BRANCH"
+          cp "$RUNNER_TEMP/openapi.json" openapi.json
+          git add openapi.json
+          git commit -m "openapi.json from tripmate-backend $BACKEND_SHA"
+          git push --force origin "$CONTRACTS_BRANCH"
+      - name: Open or update the pull request
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CONTRACTS_TOKEN }}
+          BACKEND_SHA: ${{ github.sha }}
+          BACKEND_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          body="Generated from \`tripmate-backend\` commit [\`${BACKEND_SHA}\`](${BACKEND_URL}) by the workflow Publish contract. Never edit \`openapi.json\` by hand."
+          number="$(gh pr list --repo "$CONTRACTS_REPO" --head "$CONTRACTS_BRANCH" --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            gh pr create --repo "$CONTRACTS_REPO" --base main --head "$CONTRACTS_BRANCH" \
+              --title "openapi.json from tripmate-backend ${BACKEND_SHA:0:7}" --body "$body"
+          else
+            gh pr edit "$number" --repo "$CONTRACTS_REPO" \
+              --title "openapi.json from tripmate-backend ${BACKEND_SHA:0:7}" --body "$body"
+          fi

@@ -67,6 +67,7 @@ every push to `main`. Each job is a check that is required on `main`
 | `requirements` | after `unit` and `integration` (it runs even when one failed, but not when the run was cancelled, and fails when a JUnit artifact is missing): `flowchecks.requirements` reads the JUnit XML both jobs write, keeps `requirements-report.md` and `.json` as an artifact, and writes the job summary |
 | `imports` | `lint-imports` |
 | `error-codes` | `python -m app.platform.error_codes` lists the codes; `flowchecks.error_codes --translations <dir> --codes <file>` checks that every error code a module registers (`registry.add_error_codes`) or the platform returns (`PLATFORM_ERROR_CODES`) has text in `en` and `vi` in the `translations` folder of `tripmate-contracts`, checked out at the commit in `contracts-ref` (the job fails unless the file holds a full 40-character SHA) |
+| `contract` | no services: generates `openapi.json`, runs the example check, and runs Schemathesis on the app in process (ASGI); keeps `openapi.json` as an artifact |
 | `migrations` | exactly one Alembic head, `alembic upgrade head`, `alembic check` |
 | `audit` | `pip-audit` on the locked dependencies |
 | `secrets` | gitleaks over the commits of the change and the checked-out files |
@@ -89,6 +90,22 @@ The four flow checks are in `.github/workflows/flow.yml` (a call of the
 reusable `flow-checks.yml`) and `risk-gate.yml` (section "Flow checks"). Checks of later cards
 join these files in their own cards. Third-party
 actions are pinned to a full commit SHA with the version in a comment.
+
+## Contract
+
+- Generate the contract: `uv run python -m app.platform.contract generate openapi.json`
+  (needs no setting and no service; the same app gives the same bytes). Check the
+  examples: `... contract check openapi.json`. `info.version` is a constant
+  (`CONTRACT_VERSION`): the real contract version comes from the tags of `tripmate-contracts`.
+- Declare a stub in a module's `api.py` with `stub(router, "GET", "/path", response_model=M)`
+  from `app/platform/contract.py`: the contract marks it `x-stub: true`, it answers
+  `501 server.not_implemented`, and the check fails (naming `<METHOD> <path>`) when a response
+  schema has no example (`json_schema_extra={"examples": [...]}` on the model).
+- `.github/workflows/publish-contract.yml` runs only on pushes to `main`, in the environment
+  `contracts` (secret `CONTRACTS_TOKEN`): it force-updates the branch `backend/openapi` of
+  `tripmate-contracts` and opens or updates one pull request, and does nothing when
+  `openapi.json` did not change. `/v1/health` is not run by Schemathesis (it needs PostgreSQL
+  and Redis).
 
 ## Flow checks
 
