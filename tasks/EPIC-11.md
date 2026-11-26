@@ -715,6 +715,7 @@ None.
 - A test commit that only changes an existing test file is not asked to fail, as for Python.
 - Python tests keep the check per test function of F14.
 - A run that cannot start, or finds no test in the file, is an error of the run and fails the check.
+- The `failing-first` job of the reusable workflow sets up the caller's runtime before its setup command, for example Node 24 for `tripmate-contracts` and `tripmate-web`.
 
 **Leaves out**
 
