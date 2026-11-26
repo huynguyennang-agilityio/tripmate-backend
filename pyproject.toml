@@ -107,6 +107,7 @@ ignore_imports = [
     "app.** -> app.platform.**",
     "app.** -> app.*.service",
     "app.main -> app.**",
+    "app.contract -> app.**",
     "app.worker -> app.**",
     "app.scheduler -> app.**",
 ]

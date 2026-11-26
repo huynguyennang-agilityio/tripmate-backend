@@ -25,3 +25,5 @@ htmlcov/
 # CI reports
 junit-*.xml
 requirements-report/
+.schemathesis/
+/openapi.json

@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.6
+**Version:** 1.7
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -410,9 +410,11 @@ None.
 **Scope**
 
 - `openapi.json` generated from the app, the same file every time for the same app.
-- A stub route marked `x-stub: true` and returning `501`; every response schema of a stub has an example, or the check fails and names the operation.
-- Schemathesis against the contract joins CI.
+- A stub route is declared with the helper `stub()` of `app/platform/contract.py`: it is marked `x-stub: true` and returns `501 server.not_implemented` in the error format; every response schema of a stub has an example, or the check fails and names the operation.
+- The CI job `contract` generates the file, runs the example check, and runs Schemathesis against the contract.
 - A job that runs only on pushes to `main` opens a pull request in `tripmate-contracts` with the new file, using `CONTRACTS_TOKEN`; no pull request when the contract did not change.
+- The job uses the GitHub environment `contracts`, which only `main` may use, and the token is a secret of that environment, so a branch that edits the workflow cannot read it.
+- The pull request always comes from one branch, `backend/openapi`: a later merge updates the branch and the open pull request.
 
 **Leaves out**
 
@@ -806,3 +808,4 @@ None.
 | 1.4 | 2026-11-26 | F14 scope, as the product owner decided after review round 2: the label counts only when added after the newest commit; any `conftest.py` change outside a test commit breaks the test lock. |
 | 1.5 | 2026-11-26 | F13 scope, as the product owner decided before the tests: skipped tests are read from the JUnit XML of the test run; only IDs of the prd.md form are checked; the check is the CI job `requirements`, with the report in the job summary and as an artifact. |
 | 1.6 | 2026-11-26 | New task F15, as the product owner decided during CT1: failing first reads only Python test files, so it learns the test files of any language. |
+| 1.7 | 2026-11-26 | F12 scope, as the product owner decided before the tests: stubs are declared with `stub()` and return `501 server.not_implemented`; the CI job `contract` runs the example check and Schemathesis; the token is a secret of the environment `contracts`, which only `main` may use; the pull request comes from the one branch `backend/openapi`. |

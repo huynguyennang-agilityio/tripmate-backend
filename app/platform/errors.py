@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -35,19 +35,22 @@ REQUEST_ID_HEADER = "X-Request-Id"
 REQUEST_INVALID = "request.invalid"
 SERVER_ERROR = "server.error"
 SERVER_UNAVAILABLE = "server.unavailable"
+NOT_IMPLEMENTED = "server.not_implemented"
 FIELD_MISSING = "request.field_missing"
 FIELD_INVALID = "request.field_invalid"
 NOT_FOUND = "request.not_found"
 METHOD_NOT_ALLOWED = "request.method_not_allowed"
 
 # Codes the platform returns itself; each needs text in `tripmate-contracts`.
-# (`server.unavailable` is returned by the health check and the rate limit, cards F1 and F6.)
+# (`server.unavailable` is returned by the health check and the rate limit, cards F1 and F6;
+# `server.not_implemented` by a stub route, card F12.)
 # The two field codes are all a `fields` entry can carry, so the set stays closed.
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
     {
         REQUEST_INVALID,
         SERVER_ERROR,
         SERVER_UNAVAILABLE,
+        NOT_IMPLEMENTED,
         FIELD_MISSING,
         FIELD_INVALID,
         NOT_FOUND,
@@ -173,6 +176,23 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     """The body of every error response (api-design.md, section 4.1)."""
+
+    # An example, so a stub whose request has parameters (it documents `400`) passes the
+    # example check of card F12.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "error": {
+                        "code": REQUEST_INVALID,
+                        "params": {},
+                        "fields": [{"field": "name", "code": FIELD_MISSING}],
+                        "requestId": "01JD0000000000000000000000",
+                    }
+                }
+            ]
+        }
+    )
 
     error: ErrorDetail
 

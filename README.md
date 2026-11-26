@@ -233,7 +233,7 @@ uv run lint-imports
 
 ## CI and flow checks
 
-Fourteen checks are required on `main`: ten in `ci.yml` and four flow checks. The rules
+Sixteen checks are required on `main`: twelve in `ci.yml` and four flow checks. The rules
 and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow checks".
 
 | Check | What it enforces |
@@ -244,6 +244,8 @@ and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow check
 | `integration` | Integration and API tests on PostgreSQL 16 and Redis 7 |
 | `requirements` | Every P0 ID in `tests/requirement-ids.txt` has a test that ran; no test is named with an unlisted ID |
 | `imports` | Module boundaries (import-linter) |
+| `error-codes` | Every error code has text in `en` and `vi` in `tripmate-contracts` |
+| `contract` | `openapi.json` generates, every stub response has an example, Schemathesis passes |
 | `migrations` | One Alembic head, upgrade works, models match migrations |
 | `audit` | pip-audit on locked dependencies |
 | `secrets` | gitleaks on the commits and the files |
@@ -252,6 +254,11 @@ and exact behaviour are in [CLAUDE.md](CLAUDE.md), sections "CI" and "Flow check
 | `flow / test-lock` | No later commit changes, skips, or deletes a locked test |
 | `flow / mutation` | Rule files have no unexplained surviving mutant |
 | `gate / risk-gate` | A High path changed only with the `human-approved` label (the product owner adds it) |
+
+A push to `main` also runs `.github/workflows/publish-contract.yml` (environment `contracts`):
+when `openapi.json` changed, it opens or updates the pull request from `backend/openapi` in
+`tripmate-contracts`. Generate the file by hand with
+`uv run python -m app.contract generate openapi.json`.
 
 ## How a card is built
 
