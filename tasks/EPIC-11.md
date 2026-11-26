@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.7
+**Version:** 1.8
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -716,8 +716,10 @@ None.
 - A test file of another language that a test commit adds is run with the caller's test command at that commit and must fail; the check names the file when it passes.
 - A test commit that only changes an existing test file is not asked to fail, as for Python.
 - Python tests keep the check per test function of F14.
-- A run that cannot start, or finds no test in the file, is an error of the run and fails the check.
+- A test file of another language fails when its run exits non-zero, except an error of the run.
+- An error of the run fails the check and names the file: the test command cannot start (exit 126 or 127, or not found), the run is killed by a signal (an exit code of 128 or more from a wrapper still counts as failing), or the runner's output matches the caller's no-test pattern, for example `^ok \d+ - \S+\.test\.js$` for `node --test --test-reporter=tap`, where Node reports a file with no test as one passing test named after the file.
 - The `failing-first` job of the reusable workflow sets up the caller's runtime before its setup command, for example Node 24 for `tripmate-contracts` and `tripmate-web`.
+- No case covers the runtime set-up: the pull request shows one CI run of the reusable workflow with Node 24 set up.
 
 **Leaves out**
 
@@ -809,3 +811,4 @@ None.
 | 1.5 | 2026-11-26 | F13 scope, as the product owner decided before the tests: skipped tests are read from the JUnit XML of the test run; only IDs of the prd.md form are checked; the check is the CI job `requirements`, with the report in the job summary and as an artifact. |
 | 1.6 | 2026-11-26 | New task F15, as the product owner decided during CT1: failing first reads only Python test files, so it learns the test files of any language. |
 | 1.7 | 2026-11-26 | F12 scope, as the product owner decided before the tests: stubs are declared with `stub()` and return `501 server.not_implemented`; the CI job `contract` runs the example check and Schemathesis; the token is a secret of the environment `contracts`, which only `main` may use; the pull request comes from the one branch `backend/openapi`. |
+| 1.8 | 2026-11-26 | F15 scope, as the product owner decided before the code: a non-zero exit counts as failing; an error of the run is a command that cannot start (exit 126 or 127), a run killed by a signal, or output that matches the caller's no-test pattern; the runtime set-up is shown on one CI run, with no case. |
