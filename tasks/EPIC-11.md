@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.8
+**Version:** 1.9
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -29,6 +29,7 @@ Test case levels are the letters of [test-strategy.md](https://github.com/huyngu
 | [F9](#f9) | Worker, scheduler, and cleanup | M | High | F7, F8 | 5 |
 | [F11](#f11) | Local stack, image, and production on Render | M | High | F9, F10 | 5 |
 | [F15](#f15) | Failing first for tests in any language | S | High | F14 | 3 |
+| [F16](#f16) | Failing first sets up each test commit | S | High | F15 | 3 |
 
 ## F1
 
@@ -744,6 +745,53 @@ None.
 
 None.
 
+## F16
+
+**F16 Failing first sets up each test commit**
+
+**Facts**
+
+| Fact | Value |
+|------|-------|
+| Epic | EPIC-11 |
+| Repository | `tripmate-backend` |
+| Machine | Mac 1, wave 3 |
+| Size | S |
+| Risk | High: it changes a check of development-flow.md, section 2.3 |
+| Depends on | F15 |
+| Requirements | Development flow |
+| Spec sections | 2.12 (Failing first) |
+
+**Scope**
+
+- Failing first runs the caller's setup command in the worktree of each test commit, before the test files that commit adds are run.
+- A test then runs with the dependencies of its own commit: for example, `npm ci` there installs the Vitest of that commit's `package-lock.json`, so `tripmate-contracts` can use its own test command instead of `npx --yes vitest@5.1.1 run`.
+- A setup command that fails in a test commit's worktree is an error of the run: the check fails and names the commit.
+- With no setup command, failing first runs as in F15.
+- Python tests keep the check per test function of F14.
+
+**Leaves out**
+
+- Moving the pin and the test command in `tripmate-contracts`: its next card that touches its flow checks.
+- Caching dependencies between test commits.
+
+**Done when**
+
+2.12: failing first runs the caller's setup command in the worktree of each test commit before its test files
+
+**Test cases**
+
+| Case | Kind | Given | Expected | Level |
+|------|------|-------|----------|-------|
+| F16-1 | Main | A setup command that writes a file the test needs, and a test commit whose added test fails only on its assertion once the file exists | The setup command runs in that commit's worktree first, and the check passes | U |
+| F16-2 | Error | A setup command that exits non-zero in a test commit's worktree | The check fails as an error of the run and names the commit | U |
+| F16-3 | Edge | No setup command | Failing first runs as in F15 | U |
+| F16-4 | Edge | Two test commits | The setup command runs once in each commit's own worktree | U |
+
+**Manual checks**
+
+None.
+
 ## F11
 
 **F11 Local stack, image, and production on Render**
@@ -812,3 +860,4 @@ None.
 | 1.6 | 2026-11-26 | New task F15, as the product owner decided during CT1: failing first reads only Python test files, so it learns the test files of any language. |
 | 1.7 | 2026-11-26 | F12 scope, as the product owner decided before the tests: stubs are declared with `stub()` and return `501 server.not_implemented`; the CI job `contract` runs the example check and Schemathesis; the token is a secret of the environment `contracts`, which only `main` may use; the pull request comes from the one branch `backend/openapi`. |
 | 1.8 | 2026-11-26 | F15 scope, as the product owner decided before the code: a non-zero exit counts as failing; an error of the run is a command that cannot start (exit 126 or 127), a run killed by a signal, or output that matches the caller's no-test pattern; the runtime set-up is shown on one CI run, with no case. |
+| 1.9 | 2026-11-27 | New task F16, as the product owner decided during CT2: failing first runs the caller's setup command in the worktree of each test commit. |
