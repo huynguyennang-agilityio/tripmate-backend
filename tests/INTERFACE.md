@@ -43,6 +43,9 @@ What the tests need from the code, and nothing more, card by card:
   and 4.2 and the four F7 decisions in 5.1, data-model.md, section 6.3
   (version 1.8), and api-design.md, section 2, row "Idempotency" (cases
   F7-1 to F7-10), in the section "F7: Idempotency keys".
+- F16 Failing first sets up each test commit: from the EPIC-11 spec,
+  section 2.12, and the task (cases F16-1 to F16-4), in the section
+  "F16: Failing first sets up each test commit".
 
 ## Running the tests
 
@@ -666,6 +669,89 @@ passing: list[str] = failing_first.check(
 | F15-5 | The same (the file fails under Node), the test command a runner that exits `126`, then one that exits `127` | The same, for each |
 | F15-5 | A test commit adds `tests/unit/calc.test.js` holding no test; the runner prints `# tests 0` and exits `0`; `no_test_pattern="^# tests 0$"` | The same |
 | F15-5 (control) | A test commit adds the failing `tests/unit/calc.test.js`; `node --test` with `no_test_pattern="^# tests 0$"` (Node prints `# tests 1`) | `check` returns `[]`; the command exits `0` |
+
+## F16: Failing first sets up each test commit
+
+F16 adds the caller's setup command to `flowchecks.failing_first`
+(sections "F14: Failing first" and "F15: Failing first in any
+language"; EPIC-11 spec, section 2.12; tasks/EPIC-11.md, F16). The
+tests are in `tests/unit/flow/test_F16_setup_each_test_commit.py`,
+with the helpers of `tests/unit/flow/repo.py`.
+
+```python
+from flowchecks import failing_first
+
+passing: list[str] = failing_first.check(
+    repo,
+    base,
+    head,
+    test_command,
+    test_file_pattern="tests/**/*.test.js",
+    setup_command="npm ci",
+)
+```
+
+- `setup_command`: `str | None`, keyword-only, default `None`: the
+  caller's setup command, one string run through a shell as
+  `bash -c "<setup_command>"`, the same way the reusable workflow runs
+  its input `setup-command`. So it may hold `&&`, `;`, quotes,
+  redirections, and `$PWD`. It inherits the check's environment.
+- Each test commit that adds test files gets its own git worktree, a
+  fresh checkout of that commit (detached, so `git rev-parse HEAD` in
+  it gives that commit's full SHA), never the caller's repository
+  itself. Nothing untracked carries over from one test commit's
+  worktree to the next: a file that the setup command (or a test)
+  wrote in the worktree of one test commit is absent in the worktree
+  of the next (F16-4).
+- In each such worktree the setup command runs exactly once, with the
+  worktree's root as its current directory, before any test file that
+  commit adds is run there. The test command then runs from that same
+  root, as in F14 and F15, so it may be a path the setup wrote, for
+  example `node_modules/.bin/vitest` (F16-1).
+- The setup command runs under the check's `timeout`, like each test
+  run.
+- An error of the run, from the setup command, is one of: it exits
+  non-zero (including `bash`'s `127` for a command it cannot find), it
+  cannot start, or it runs past the timeout. `check` then raises
+  `failing_first.RunError`, whose message names the full SHA of the
+  test commit whose setup broke (and not the SHA of another test
+  commit). It is never counted as a failure of a test, so the check
+  never passes on it.
+  - The message also holds the setup command's output, stdout and
+    stderr; on a timeout it holds the words `timed out`.
+  - None of the test files that commit adds is run once its setup has
+    broken.
+- The setup command runs once per test commit, however many test files
+  or test functions that commit adds (F16-4).
+- After the check, whether it passed, failed, or raised `RunError`,
+  the caller's repository has no worktree left:
+  `git worktree list --porcelain` shows only the main tree.
+- `None` or `""` means no setup command: failing first runs as in F15
+  (F16-3), with the same results.
+- Command line: the F15 command with `--setup-command "<command>"`,
+  the string given to `bash -c` as is (not split). Its default is
+  empty, and an empty value means no setup command, as the workflow's
+  default empty input does. On an error of the setup command it exits
+  non-zero and prints the commit's SHA and the words
+  `error of the run`, as F15 does for a file.
+- The reusable workflow passes its input `setup-command` to the command
+  line. No unit test reads the workflow.
+- The tests run the JavaScript test files with `node --test`, as in
+  F15 (`node` on the PATH; a missing `node` fails them). F16-4's setup
+  command appends a line to a log file under `tmp_path`, outside the
+  repository under check, so the test can read which commit and which
+  directory each run had.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F16-1 | The test command is `node_modules/.bin/runner`, a script that runs `node --test` and that only the setup command writes (it is not committed); a test commit adds `tests/unit/calc.test.js`, which fails at that commit (`add` throws) | `check` returns `[]` and the caller's repository has no `node_modules`; the command with `--setup-command` exits `0` |
+| F16-2 | Two test commits; the setup command `sh tests/setup.sh` exits `0` at the first and `4` at the second | `check` raises `RunError` naming the second commit's SHA and not the first's; the command exits non-zero and prints that SHA and `error of the run` |
+| F16-2 | The setup command is a program no machine has | The same, naming the test commit's SHA |
+| F16-2 | The setup command `sleep 30` with `timeout=2` (`--timeout 2`); the test command a runner outside the repository that logs each file it runs | `RunError` names the commit's SHA and says `timed out`; the runner's log is never written; no worktree is left; the command exits non-zero and prints the same and `error of the run` |
+| F16-2 | The setup command `echo F16-SETUP-OUT; echo F16-SETUP-ERR >&2; exit 3`, the same logging runner | `RunError` names the commit's SHA and holds both lines of output; the runner's log is never written; no worktree is left; the command prints the same |
+| F16-3 | No setup command (`setup_command=None`, `""`, or left out; on the command line `--setup-command ""` or left out); a test commit adds one passing and one failing JavaScript test file | `check` returns exactly the passing file's path, as in F15; the command exits non-zero and prints it |
+| F16-4 | Two test commits, each adding a failing test file; the setup command logs `git rev-parse HEAD`, `$PWD`, and whether a marker file exists, then writes the marker | The log has two lines, one per test commit SHA, with two distinct directories, neither the caller's repository; the marker is absent at both runs; `check` returns `[]` |
+| F16-4 | One test commit adds two failing test files; the logging setup and the logging runner | The setup log has exactly one line, for that commit; the runner logged both files at that commit, each after the setup (its marker present); `check` returns `[]`, the command exits `0`, and no worktree is left |
 
 ## F13: Requirement-to-test report (`flowchecks.requirements`)
 
