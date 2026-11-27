@@ -29,4 +29,4 @@ jobs:
       databases: true
       run-risk-gate: false
       # This repository's own checks as they are on `main`, not as the pull request changes them.
-      flowchecks-ref: ${{ github.event.pull_request.base.sha }}
+      flowchecks-ref: 4dddfe02fbf4455b95532e783e14f862c52f85d8
