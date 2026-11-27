@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
+import anyio
 from fastapi import Depends, FastAPI, Request
 from sqlalchemy import MetaData, event, text
 from sqlalchemy.ext.asyncio import (
@@ -182,8 +183,10 @@ class SessionHandoff:
 
 
 async def _end(session: AsyncSession) -> None:
+    """Close the session; a cancelled request (a client that disconnects) cannot stop it."""
     try:
-        await session.close()
+        with anyio.CancelScope(shield=True):
+            await session.close()
     finally:
         session.info[_REQUEST_ENDED] = True
 

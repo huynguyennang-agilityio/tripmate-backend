@@ -17,9 +17,10 @@ declaration: `dependencies=[Depends(public), Depends(idempotent)]`.
   committing it, so a `2xx` is stored in the handler's transaction and both commit together or
   not at all; a commit that fails answers `500` and leaves no row. A `4xx` the handler answers
   rolls its transaction back and is stored in a transaction of its own. A `5xx` deletes the row.
-  A request refused before the handler (`400` for its schema, `401`, `429`, `503`) stores nothing
-  and releases the key. Only the status, the body, and the headers `Location`, `ETag`, and
-  `Content-Type` are stored.
+  A request refused before the handler (`400` for its schema, and `401`, `429`, `503` from
+  access or rate limits, which never claim the key) stores nothing and releases the key; a `401`
+  or `429` the handler itself answers is stored like any `4xx`. Only the status, the body, and
+  the headers `Location`, `ETag`, and `Content-Type` are stored.
 - "The same request" is the SHA-256 of the method, the path, and the body: a JSON body with its
   keys sorted and no whitespace, any other body as its bytes.
 - The contract documents the required header and the `400` and `409` answers on every operation
@@ -73,9 +74,6 @@ STORED_HEADERS = ("location", "etag", "content-type")
 ABANDONED_AFTER_SECONDS = 60
 # A key older than this is expired, whatever its state.
 EXPIRED_AFTER_SECONDS = 24 * 60 * 60
-# Answers of a request refused before its handler that no handler gives (`400` for the schema
-# is told apart by `SCHEMA_REFUSED_KEY`): they are never stored.
-UNSTORED_STATUSES = frozenset({401, 429})
 # Private to the platform: the claim of this request.
 _CLAIM_KEY = "_tripmate_platform_idempotency_claim"
 _CLAIM_ATTEMPTS = 3
@@ -378,7 +376,9 @@ class IdempotencyMiddleware:
                 body.extend(message.get("body", b""))
                 if not message.get("more_body", False):
                     ended = True
-                    await self._end(scope, receive, send, claim, start, bytes(body))
+                    # A client that disconnects must not stop the store or the commit halfway.
+                    with anyio.CancelScope(shield=True):
+                        await self._end(scope, receive, send, claim, start, bytes(body))
             else:
                 await send(message)
 
@@ -409,9 +409,7 @@ class IdempotencyMiddleware:
     ) -> None:
         status: int = start["status"]
         factory = self._factory(scope)
-        refused = (
-            bool(scope.get("state", {}).get(SCHEMA_REFUSED_KEY)) or status in UNSTORED_STATUSES
-        )
+        refused = bool(scope.get("state", {}).get(SCHEMA_REFUSED_KEY))
         try:
             if status >= 500 or refused:
                 await claim.handoff.rollback()
