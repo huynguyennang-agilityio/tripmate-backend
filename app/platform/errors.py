@@ -16,11 +16,11 @@
 
 from __future__ import annotations
 
-import logging
 import secrets
 import time
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-Id"
 
@@ -276,7 +276,13 @@ class RequestIdMiddleware:
             if isinstance(error, AppError):
                 status, body = error.status, error_body(error, request_id)
             else:
-                logger.exception("Unexpected error in request %s", request_id)
+                # No exc_info and no message: the text of a database error quotes the values it
+                # rejected. The full error goes to Sentry through the observability middleware.
+                logger.error(
+                    "Unexpected error in request",
+                    request_id=request_id,
+                    error_type=type(error).__name__,
+                )
                 status, body = 500, error_body(AppError(500, SERVER_ERROR), request_id)
             headers = error.headers if isinstance(error, AppError) else None
             await JSONResponse(status_code=status, content=body, headers=headers)(

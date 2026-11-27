@@ -51,6 +51,7 @@ def create_engine(database_url: str) -> AsyncEngine:
     return create_async_engine(
         database_url,
         pool_pre_ping=True,
+        hide_parameters=True,
         connect_args={"timeout": CONNECT_TIMEOUT_SECONDS},
     )
 
