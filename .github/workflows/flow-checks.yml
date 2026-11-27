@@ -181,7 +181,7 @@ jobs:
           if [ -n "$SETUP_COMMAND" ]; then
             help_text="$(uv run --no-project --python 3.13 python -m flowchecks.failing_first --help)"
             if [[ "$help_text" == *"--setup-command"* ]]; then
-              extra_args+=(--setup-command "$SETUP_COMMAND")
+              extra_args+=("--setup-command=$SETUP_COMMAND")
             else
               echo "::notice::The flowchecks-ref has no --setup-command (older than F16): the setup runs only once in the checkout."
             fi
