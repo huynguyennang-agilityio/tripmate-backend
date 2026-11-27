@@ -18,13 +18,16 @@ spans, metrics, and events are sent from background threads, and `Observability.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sys
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 import sentry_sdk
 import structlog
 from fastapi import FastAPI, Request
@@ -40,11 +43,12 @@ from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     SimpleSpanProcessor,
     SpanExporter,
+    SpanExportResult,
 )
 from redis.asyncio import Redis
 from sentry_sdk.transport import Transport
@@ -65,6 +69,8 @@ SERVICE_NAME = "tripmate-backend"
 # bounds the background send and the flush when the app stops.
 EXPORT_TIMEOUT_SECONDS = 3.0
 SENTRY_SHUTDOWN_TIMEOUT_SECONDS = 2.0
+# The whole shut-down flush (spans, metrics, Sentry) ends within this many seconds.
+SHUTDOWN_TIMEOUT_SECONDS = 10.0
 # The same push interval as Grafana Cloud's default scrape.
 METRIC_EXPORT_INTERVAL_MILLIS = 60_000
 # Seconds one reading of the outbox backlog may take.
@@ -80,6 +86,13 @@ _NO_REQUEST_DATA: DataCollectionUserOptions = {
     "url_query_params": {"mode": "off"},
     "stack_frame_variables": False,
 }
+
+# Span attributes that hold a URL or a path with its query string (old and new semantic
+# conventions); the query part is cut off before a span leaves the process.
+_URL_ATTRIBUTES = ("http.url", "url.full", "http.target", "url.path", "http.path")
+_QUERY_ATTRIBUTES = ("url.query", "http.query")
+# Libraries whose own INFO line logs a full request URL, query string included.
+_QUIET_LOGGERS = ("httpx", "httpcore")
 
 _HANDLER_MARK = "_tripmate_stdout_json"
 _configure_lock = threading.Lock()
@@ -159,6 +172,64 @@ def configure_logging() -> None:
         root.addHandler(handler)
         if root.level == logging.NOTSET or root.level > logging.INFO:
             root.setLevel(logging.INFO)
+        for name in _QUIET_LOGGERS:
+            logging.getLogger(name).setLevel(logging.WARNING)
+
+
+# -- Span scrubbing ---------------------------------------------------------------------------
+
+
+def _without_query(value: Any) -> Any:
+    if not isinstance(value, str) or ("?" not in value and "#" not in value):
+        return value
+    parts = urlsplit(value)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def _scrub_attributes(attributes: Any) -> dict[str, Any]:
+    clean: dict[str, Any] = {}
+    for key, value in dict(attributes or {}).items():
+        if key in _QUERY_ATTRIBUTES:
+            continue
+        clean[key] = _without_query(value) if key in _URL_ATTRIBUTES else value
+    return clean
+
+
+class _ScrubbingExporter(SpanExporter):
+    """Hands spans to `inner` with no query string in any URL attribute.
+
+    It works on the finished span, so it covers an attribute set when the span starts and one
+    set when it ends, whichever instrumentation sets it.
+    """
+
+    def __init__(self, inner: SpanExporter) -> None:
+        self._inner = inner
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        return self._inner.export([self._scrubbed(span) for span in spans])
+
+    @staticmethod
+    def _scrubbed(span: ReadableSpan) -> ReadableSpan:
+        return ReadableSpan(
+            name=span.name,
+            context=span.context,
+            parent=span.parent,
+            resource=span.resource,
+            attributes=_scrub_attributes(span.attributes),
+            events=span.events,
+            links=span.links,
+            kind=span.kind,
+            instrumentation_scope=span.instrumentation_scope,
+            status=span.status,
+            start_time=span.start_time,
+            end_time=span.end_time,
+        )
+
+    def shutdown(self) -> None:
+        self._inner.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._inner.force_flush(timeout_millis)
 
 
 # -- Telemetry and error reporting ----------------------------------------------------------
@@ -193,15 +264,19 @@ class Observability:
         self.tracer_provider: TracerProvider | None = None
         if span_exporter is not None:
             self.tracer_provider = TracerProvider(resource=resource)
-            self.tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+            self.tracer_provider.add_span_processor(
+                SimpleSpanProcessor(_ScrubbingExporter(span_exporter))
+            )
         elif base is not None:
             self.tracer_provider = TracerProvider(resource=resource)
             self.tracer_provider.add_span_processor(
                 BatchSpanProcessor(
-                    OTLPSpanExporter(
-                        endpoint=f"{base}/v1/traces",
-                        headers=headers,
-                        timeout=int(EXPORT_TIMEOUT_SECONDS),
+                    _ScrubbingExporter(
+                        OTLPSpanExporter(
+                            endpoint=f"{base}/v1/traces",
+                            headers=headers,
+                            timeout=int(EXPORT_TIMEOUT_SECONDS),
+                        )
                     ),
                     export_timeout_millis=int(EXPORT_TIMEOUT_SECONDS * 1000),
                 )
@@ -339,10 +414,11 @@ class Observability:
             )
             RedisInstrumentor.instrument_client(redis, tracer_provider=self.tracer_provider)
 
-    def instrument_http_client(self, client: Any) -> None:
-        """Trace the outgoing calls of an `httpx` client the backend makes."""
+    def instrument_http_client(self, client: httpx.AsyncClient) -> httpx.AsyncClient:
+        """Trace the outgoing calls of an `httpx` client the backend makes; returns it."""
         if self.tracer_provider is not None:
             HTTPXClientInstrumentor.instrument_client(client, tracer_provider=self.tracer_provider)
+        return client
 
     # -- errors --
 
@@ -362,21 +438,48 @@ class Observability:
     # -- shutdown --
 
     async def shutdown(self) -> None:
-        """Flush spans, metrics, and events, without blocking the event loop."""
-        self._engine = None
-        await asyncio.to_thread(self._flush_and_close)
-        self._loop = None
+        """Flush spans, metrics, and events, without blocking the event loop.
 
-    def _flush_and_close(self) -> None:
-        for step in (
+        The three steps run at once, each in its own daemon thread, and the wait for all of
+        them ends after `SHUTDOWN_TIMEOUT_SECONDS`: a collector or Sentry that never answers
+        costs that long at most, and never keeps the process from exiting.
+        """
+        self._engine = None
+        loop = asyncio.get_running_loop()
+        done = [loop.create_future() for _ in self._shutdown_steps()]
+        for step, finished in zip(self._shutdown_steps(), done, strict=True):
+            threading.Thread(
+                target=self._run_step, args=(step, loop, finished), daemon=True
+            ).start()
+        try:
+            await asyncio.wait(done, timeout=SHUTDOWN_TIMEOUT_SECONDS)
+        finally:
+            for finished in done:
+                finished.cancel()
+            self._loop = None
+
+    def _shutdown_steps(self) -> tuple[Callable[[], None], ...]:
+        return (
             self._shutdown_tracer_provider,
             self._shutdown_meter_provider,
             self._close_sentry,
-        ):
-            try:
-                step()
-            except Exception:
-                logging.getLogger(__name__).warning("Telemetry shutdown step failed")
+        )
+
+    @staticmethod
+    def _run_step(
+        step: Callable[[], None], loop: asyncio.AbstractEventLoop, finished: asyncio.Future[None]
+    ) -> None:
+        try:
+            step()
+        except Exception:
+            logging.getLogger(__name__).warning("Telemetry shutdown step failed")
+        with contextlib.suppress(RuntimeError):  # the loop closed while the step ran
+
+            def mark() -> None:
+                if not finished.done():
+                    finished.set_result(None)
+
+            loop.call_soon_threadsafe(mark)
 
     def _shutdown_tracer_provider(self) -> None:
         if self.tracer_provider is not None:
@@ -411,8 +514,18 @@ def _route_template(scope: Scope) -> str | None:
     is the request path with each path parameter's value put back as `{name}`: the label
     stays one per route, never one per ID.
     """
-    if scope.get("route") is None:
+    route = scope.get("route")
+    if route is None:
         return None
+    template = getattr(route, "path", None)
+    # The matched route's own path is the full template unless the route sits in a mounted app
+    # (it then holds only its part); the segment count tells the two apart.
+    if (
+        isinstance(template, str)
+        and template.startswith("/")
+        and template.count("/") == str(scope["path"]).count("/")
+    ):
+        return template
     named = {str(value): name for name, value in scope.get("path_params", {}).items()}
     segments = str(scope["path"]).split("/")
     return "/".join("{" + named[s] + "}" if s in named else s for s in segments)
