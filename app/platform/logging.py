@@ -43,13 +43,14 @@ from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace import Event, ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     SimpleSpanProcessor,
     SpanExporter,
     SpanExportResult,
 )
+from opentelemetry.trace import Link, Status
 from redis.asyncio import Redis
 from sentry_sdk.transport import Transport
 from sqlalchemy import text
@@ -195,6 +196,27 @@ def _scrub_attributes(attributes: Any) -> dict[str, Any]:
     return clean
 
 
+_DROPPED_EVENT_ATTRIBUTES = frozenset({"exception.message", "exception.stacktrace"})
+
+
+def _scrubbed_event(event: Event) -> Event:
+    attributes = {
+        key: value
+        for key, value in _scrub_attributes(event.attributes).items()
+        if key not in _DROPPED_EVENT_ATTRIBUTES
+    }
+    return Event(name=event.name, attributes=attributes, timestamp=event.timestamp)
+
+
+def _scrubbed_link(link: Link) -> Link:
+    return Link(link.context, _scrub_attributes(link.attributes))
+
+
+def _scrubbed_status(status: Status) -> Status:
+    """Keeps the code and drops the description: a database error quotes the rejected value."""
+    return Status(status.status_code)
+
+
 class _ScrubbingExporter(SpanExporter):
     """Hands spans to `inner` with no query string in any URL attribute.
 
@@ -216,11 +238,11 @@ class _ScrubbingExporter(SpanExporter):
             parent=span.parent,
             resource=span.resource,
             attributes=_scrub_attributes(span.attributes),
-            events=span.events,
-            links=span.links,
+            events=[_scrubbed_event(event) for event in span.events],
+            links=[_scrubbed_link(link) for link in span.links],
             kind=span.kind,
             instrumentation_scope=span.instrumentation_scope,
-            status=span.status,
+            status=_scrubbed_status(span.status),
             start_time=span.start_time,
             end_time=span.end_time,
         )
