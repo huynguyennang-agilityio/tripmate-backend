@@ -213,7 +213,7 @@ def _headers() -> dict[str, str]:
 async def test_F8_2_request_that_writes_a_record_adds_an_event_then_fails_stores_neither(
     set_settings, module_folder, probe_table
 ) -> None:
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     path = _probe_module(module_folder, probe_table)
     marker = f"f8-2-{uuid.uuid4().hex[:8]}"
     control_trip = uuid.uuid4()

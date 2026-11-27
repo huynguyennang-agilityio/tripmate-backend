@@ -22,7 +22,7 @@ DEVICE = {"X-Device-Id": str(uuid.uuid4())}
 async def test_F12_2_calling_a_stub_route_returns_501_not_implemented(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     name = module_folder({"__init__.py": ""})
     segment = name.replace("_", "-")
     (APP_DIR / name / "api.py").write_text(stub_api_source(segment), encoding="utf-8")

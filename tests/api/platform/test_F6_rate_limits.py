@@ -241,3 +241,32 @@ async def test_F6_5_a_route_with_its_own_limit_and_key_gets_it_as_well_as_the_ge
     for n in range(4):
         assert_passes(new_keys[n], f"new key, request {n + 1} of the ceiling of 4")
     assert_limited(new_keys[4], "new key, request 5: over the general ceiling")
+
+
+# -- RATE_LIMIT_PER_MINUTE=0 (spec 2.2 and 5.1, no case of its own) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_F6_extra_ceiling_0_turns_the_general_ceiling_off_but_not_a_routes_own_limit(
+    limits, module_folder
+) -> None:
+    limits(ceiling=0)
+    probe = write_probe(module_folder, route_limit=2, route_window=10)
+    ip = new_ip()
+    # One more than the default ceiling of 300, from one IP address.
+    over_default = 301
+
+    async with client_for(build_app()) as client:
+        open_route = [
+            await client.get(probe.open, headers=headers(ip)) for _ in range(over_default)
+        ]
+        own_limit = [
+            await client.get(probe.limited, headers=headers(new_ip(), probe_key="a"))
+            for _ in range(3)
+        ]
+
+    for n, response in enumerate(open_route, start=1):
+        assert_passes(response, f"ceiling 0, request {n} from one IP address")
+    assert_passes(own_limit[0], "ceiling 0, route limit 2, request 1")
+    assert_passes(own_limit[1], "ceiling 0, route limit 2, request 2")
+    assert_limited(own_limit[2], "ceiling 0, route limit 2, request 3: the route's limit applies")

@@ -197,7 +197,7 @@ def _write_probe(module_folder, *, undeclared: bool = False) -> _Probe:
 @pytest.fixture
 def signing_key(set_settings, monkeypatch: pytest.MonkeyPatch) -> Ed25519PrivateKey:
     """Settings on closed ports, plus a fresh test key pair whose public key the app trusts."""
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     private_key = _new_private_key()
     monkeypatch.setenv(PUBLIC_KEYS_SETTING, _public_pem(private_key))
     return private_key

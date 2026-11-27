@@ -1140,6 +1140,17 @@ F6-6 uses the real PostgreSQL and Redis on a closed port.
   an integer, the requests a minute; `300` when it is not given. It is
   optional for the app to start. The tests set small values (2 to 4) to
   reach the ceiling; F6-3 leaves it out.
+- `RATE_LIMIT_PER_MINUTE=0` turns the general ceiling off; a route's own
+  limit still applies (spec 2.2; 5.1, version 2.8). Production never sets
+  `0`. `test_F6_extra_ceiling_0_turns_the_general_ceiling_off_but_not_a_routes_own_limit`
+  sends 301 requests (one over the default of 300) from one IP address,
+  which all pass, and then reaches a route's own limit of 2, which answers
+  `429 rate.limited`.
+- The tests of earlier cards that call a route other than the health check
+  set `RATE_LIMIT_PER_MINUTE="0"` with their other settings, so they pass
+  with Redis on a closed port (or, on the real Redis, without sharing the
+  counter of the in-process client's address `127.0.0.1`). Each such test
+  is otherwise unchanged.
 - It applies to every route except the health check, with no declaration
   in the route. Its window is 60 seconds.
 - It is counted for the IP address and, on a route that is not `public`,
@@ -1218,4 +1229,5 @@ async def limited() -> dict[str, str]: ...
 | F6-4 | Ceiling 2: IP A three times (other entries before it), then IP B twice; on the `signed_in` route, user 1 from three new IPs, then user 2 from the third IP and from a new one | A: `200`, `200`, `429`; B: `200`, `200`; user 1: `200`, `200`, `429`; user 2: `200`, `200` |
 | F6-5 | Ceiling 4, route limit 2: key `a` three times and key `b` once from one IP; five new keys from another IP | `200`, `200`, `429`, `200`; then four `200` and a `429` |
 | F6-6 | Redis on a closed port: a `public` route, a `signed_in` route with a valid token, the route with its own limit | `503 server.unavailable`, all three; no handler ran |
+| Extra | Ceiling `0`: 301 requests from one IP; route limit 2: three requests with one key | All 301 `200`; then `200`, `200`, `429 rate.limited` |
 

@@ -97,7 +97,7 @@ def _error_of(response: Any) -> dict[str, Any]:
 async def test_F4_1_app_error_returns_its_status_in_the_error_format_with_request_id(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     base = _probe_module(module_folder)
 
     async with client_for(build_app()) as client:
@@ -114,7 +114,7 @@ async def test_F4_1_app_error_returns_its_status_in_the_error_format_with_reques
 async def test_F4_2_body_breaking_its_schema_in_two_fields_returns_400_with_two_fields(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     base = _probe_module(module_folder)
 
     async with client_for(build_app()) as client:
@@ -138,7 +138,7 @@ async def test_F4_2_body_breaking_its_schema_in_two_fields_returns_400_with_two_
 async def test_F4_3_body_that_is_not_json_returns_400_request_invalid(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     base = _probe_module(module_folder)
 
     async with client_for(build_app()) as client:
@@ -156,7 +156,7 @@ async def test_F4_3_body_that_is_not_json_returns_400_request_invalid(
 async def test_F4_4_unexpected_error_returns_500_server_error_with_no_detail(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     secret = f"f4-secret-detail-{uuid.uuid4().hex}"
     base = _probe_module(module_folder, hidden_detail=secret)
 
@@ -174,7 +174,7 @@ async def test_F4_4_unexpected_error_returns_500_server_error_with_no_detail(
 
 @pytest.mark.asyncio
 async def test_F4_5_two_requests_get_two_different_request_ids(set_settings, module_folder) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     base = _probe_module(module_folder)
 
     async with client_for(build_app()) as client:

@@ -36,6 +36,7 @@ ENV = {
     "DATABASE_URL": "postgresql+asyncpg://u:p@127.0.0.1:5432/d",
     "REDIS_URL": "redis://127.0.0.1:6379/0",
     "RELEASE_VERSION": "x",
+    "RATE_LIMIT_PER_MINUTE": "0",
 }
 PEM = serialization.Encoding.PEM
 FORMAT = serialization.PublicFormat.SubjectPublicKeyInfo

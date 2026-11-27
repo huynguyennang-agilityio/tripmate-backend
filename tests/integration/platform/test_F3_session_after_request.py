@@ -127,7 +127,7 @@ async def _idle_in_transaction() -> int:
 async def test_F3_1_session_used_after_the_request_is_refused_every_time(
     set_settings, module_folder, probe_table
 ) -> None:
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     name = module_folder({"__init__.py": ""})
     segment = name.replace("_", "-")
     source = API_SOURCE.format(table=probe_table, segment=segment)
