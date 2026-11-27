@@ -140,24 +140,80 @@ class _RequestSession(Session):
         return super().begin_nested()
 
 
-async def _session_in_transaction(request: Request) -> AsyncIterator[AsyncSession]:
-    factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
-    async with factory() as session:
-        _guard(session)
-        await session.begin()
+# Private to the platform: the `SessionHandoff` of a request whose transaction the idempotency
+# keys end (see `SessionHandoff`).
+HANDOFF_KEY = "_tripmate_platform_session_handoff"
+
+
+class SessionHandoff:
+    """Lets the idempotency keys end a request's transaction once its response exists.
+
+    `idempotent` puts one in the request's scope. `get_session` then does not commit when the
+    handler returns, but hands the open session over, so the stored response is written in the
+    handler's own transaction and both are committed together (or neither). The idempotency
+    middleware ends it with `commit` or `rollback`, after it holds the whole response.
+    """
+
+    def __init__(self) -> None:
+        self.session: AsyncSession | None = None
+
+    async def commit(self) -> None:
+        """Commit; a commit that fails rolls back and raises. The session is closed either way."""
+        session, self.session = self.session, None
+        if session is None:
+            return
         try:
-            yield session
-            if session.info.get(_STRAY_COMMIT):
-                raise SessionCommitError("A handler committed the session; nothing was stored")
-            # The handler's exception is thrown into the `yield`, so a raise rolls back.
             session.info[_PLATFORM_COMMIT] = True
             await session.commit()
         except BaseException:
             await session.rollback()
             raise
         finally:
-            await session.close()
-            session.info[_REQUEST_ENDED] = True
+            await _end(session)
+
+    async def rollback(self) -> None:
+        session, self.session = self.session, None
+        if session is None:
+            return
+        try:
+            await session.rollback()
+        finally:
+            await _end(session)
+
+
+async def _end(session: AsyncSession) -> None:
+    try:
+        await session.close()
+    finally:
+        session.info[_REQUEST_ENDED] = True
+
+
+async def _session_in_transaction(request: Request) -> AsyncIterator[AsyncSession]:
+    factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
+    session = factory()
+    _guard(session)
+    handed_over = False
+    try:
+        await session.begin()
+        try:
+            yield session
+            if session.info.get(_STRAY_COMMIT):
+                raise SessionCommitError("A handler committed the session; nothing was stored")
+            handoff = request.scope.get("state", {}).get(HANDOFF_KEY)
+            if isinstance(handoff, SessionHandoff):
+                # The platform ends the transaction after the response exists.
+                handoff.session = session
+                handed_over = True
+                return
+            # The handler's exception is thrown into the `yield`, so a raise rolls back.
+            session.info[_PLATFORM_COMMIT] = True
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            raise
+    finally:
+        if not handed_over:
+            await _end(session)
 
 
 async def get_session(

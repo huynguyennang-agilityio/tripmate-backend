@@ -31,6 +31,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-Id"
+# Private to the platform: set when a request is refused for its schema, which the handler
+# never saw (the idempotency keys do not store such a refusal).
+SCHEMA_REFUSED_KEY = "_tripmate_platform_schema_refused"
 
 REQUEST_INVALID = "request.invalid"
 SERVER_ERROR = "server.error"
@@ -43,11 +46,15 @@ METHOD_NOT_ALLOWED = "request.method_not_allowed"
 NOT_SIGNED_IN = "auth.not_signed_in"
 TOKEN_EXPIRED = "auth.token_expired"  # noqa: S105 (an error code)
 RATE_LIMITED = "rate.limited"
+IDEMPOTENCY_KEY_REQUIRED = "request.idempotency_key_required"
+IDEMPOTENCY_MISMATCH = "request.idempotency_mismatch"
+IDEMPOTENCY_IN_PROGRESS = "request.idempotency_in_progress"
 
 # Codes the platform returns itself; each needs text in `tripmate-contracts`.
 # (`server.unavailable` is returned by the health check and the rate limit, cards F1 and F6;
 # `server.not_implemented` by a stub route, card F12; the two `auth.` codes by the access check,
-# card F5; `rate.limited` by the rate limits, card F6.)
+# card F5; `rate.limited` by the rate limits, card F6; the three `request.idempotency_` codes by
+# the idempotency keys, card F7.)
 # The two field codes are all a `fields` entry can carry, so the set stays closed.
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -62,6 +69,9 @@ PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
         NOT_SIGNED_IN,
         TOKEN_EXPIRED,
         RATE_LIMITED,
+        IDEMPOTENCY_KEY_REQUIRED,
+        IDEMPOTENCY_MISMATCH,
+        IDEMPOTENCY_IN_PROGRESS,
     }
 )
 
@@ -135,6 +145,7 @@ async def _validation_error_handler(request: Request, error: Exception) -> JSONR
     if not isinstance(error, RequestValidationError):  # registered for it only
         raise error
     fields = [_field_problem(dict(problem)) for problem in error.errors()]
+    request.scope.setdefault("state", {})[SCHEMA_REFUSED_KEY] = True
     invalid = AppError(400, REQUEST_INVALID, fields=fields)
     return JSONResponse(status_code=400, content=error_body(invalid, _request_id_of(request)))
 

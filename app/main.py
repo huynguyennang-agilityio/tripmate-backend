@@ -13,6 +13,7 @@ from app.platform.access import install_access_contract, install_access_keys, in
 from app.platform.config import Settings, load_settings, load_settings_or_exit
 from app.platform.db import create_engine, install_sessions
 from app.platform.errors import install_error_handlers, install_openapi, install_request_id
+from app.platform.idempotency import install_idempotency, install_idempotency_contract
 from app.platform.modules import include_routes, scan_modules
 from app.platform.rate_limits import install_rate_limits, install_rate_limits_contract
 from app.platform.redis_client import create_redis
@@ -44,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_openapi(app)
     install_access_contract(app)
     install_rate_limits_contract(app)
+    install_idempotency_contract(app)
     install_rate_limits(app)
     app.state.settings = settings
     install_access_keys(app, settings.access_token_public_keys)
@@ -52,6 +54,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     registry = scan_modules()
     app.state.registry = registry
     include_routes(app, registry)
+    # Inside the device ID middleware, whose checked header the key's owner reads.
+    install_idempotency(app)
     # Inside the request ID middleware, which answers its `AppError`.
     install_device_id(app)
     # Added last, so it is the outermost middleware (see RequestIdMiddleware).
