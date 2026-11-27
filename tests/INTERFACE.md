@@ -556,6 +556,101 @@ shown: list[str] = mutation.check(changed, rules, pr_description, run_mutants)
 | F14-11 | The same | The same | The section lists it with a reason | `[]` |
 | F14-11 | The same, with the backend's path list | The same | No section | Holds the mutant; `run_mutants` called with `["app/money/splits.py"]` |
 
+## F15: Failing first in any language
+
+F15 widens `flowchecks.failing_first` (section "F14: Failing first")
+to the test files of any language (EPIC-11 spec, section 2.12). The
+tests are in `tests/unit/flow/test_F15_failing_first_any_language.py`,
+with the helpers of `tests/unit/flow/repo.py`.
+
+```python
+from flowchecks import failing_first
+
+passing: list[str] = failing_first.check(
+    repo,
+    base,
+    head,
+    test_command,
+    test_file_pattern="tests/**/*.test.js",
+    no_test_pattern="^# tests 0$",
+)
+```
+
+- `test_file_pattern`: `str`, keyword-only, the caller's test file
+  pattern. Its default is `"test_*.py"`, so the backend's calls of F14
+  (without it) are unchanged.
+- Matching: a pattern without `/` is matched against the file name (as
+  `test_*.py` matches `tests/unit/test_calc.py`); a pattern with `/` is
+  matched against the path from the repository root, where `**`
+  matches any number of folders. The tests only use paths on which
+  every reading of `**` agrees (`tests/unit/calc.test.js` for
+  `tests/**/*.test.js`).
+- A file that matches the pattern and ends in `.py` is a Python test
+  file: it keeps the per-function check of F14 (test IDs
+  `<path>::<function>`, pytest's exit codes).
+- Any other file that matches the pattern is checked per file. Its ID
+  is its path, for example `tests/unit/calc.test.js`. A file is added by
+  a test commit when it is absent at that commit's parent; it is run at
+  that commit as `test_command + [path]`, from the repository root of
+  the checkout. Any non-zero exit other than `126` and `127` is a
+  failure, as the rule asks, unless the output matches the no-test
+  pattern (below); `0` is a pass, and `check` returns the path.
+- A file that exists at the parent and that the test commit only
+  changes is not run and not asked to fail (F15-3).
+- `no_test_pattern`: `str | None`, keyword-only, default `None`: the
+  caller's regular expression that says a run found no test in the
+  file, for example `^# tests 0$` for `node --test`. It is matched with
+  `re.search` and `re.MULTILINE` (so `^` and `$` are the start and end
+  of each line) against the run's output, stdout and stderr. `None`
+  (or an empty string on the command line or in the workflow) means no
+  no-test detection: the run is judged by its exit code alone. It
+  applies only to files of another language; a Python test file keeps
+  F14's check.
+- An error of the run, for a file of another language, is one of:
+  - the test command cannot start: it is not found or cannot be run
+    (for example a file with no execute permission), so no exit code
+    exists;
+  - the run exits `126` or `127` (a shell's codes for a command that
+    cannot be run or is not found);
+  - the run's output matches `no_test_pattern`, whatever the exit code.
+
+  On an error of the run `check` raises `failing_first.RunError`,
+  whose message names the file. It is never counted as a failure of
+  the test, so the check never passes on it.
+- Command line: the F14 command with
+  `--test-file-pattern "<pattern>"` (default `test_*.py`) and
+  `--no-test-pattern "<regex>"` (default none). It exits
+  non-zero and prints the path of each passing file. On an error of the
+  run it exits non-zero and prints the file and the words
+  `error of the run`, as F14 already does.
+- The reusable workflow takes the pattern as the input
+  `test-file-pattern` (default `test_*.py`) and the no-test pattern as
+  the input `no-test-pattern` (default empty: no no-test detection),
+  and passes them to the command line. Its set-up of the caller's
+  runtime (for example Node 24) is shown on one CI run of F15's pull
+  request; no unit test reads the workflow.
+- The JavaScript tests run with Node's own runner, `node --test <file>`
+  (`node` on the PATH; Node 24 locally, the runner's Node in CI). A
+  missing `node` fails these tests; they never skip.
+- F15-5 also runs small Python runners written under `tmp_path`,
+  outside the repository under check, as the test command: one that
+  exits with a code it is given (`126`, `127`), and one that prints a
+  TAP summary holding the line `# tests 0` and exits `0`. The test
+  command for the not-executable case is a file under `tmp_path`
+  without execute permission.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F15-1 | A test commit adds `tests/unit/calc.test.js`, which passes at that commit; a later code commit | `check` returns a list that holds `tests/unit/calc.test.js`; the command exits non-zero and prints it |
+| F15-2 | A test commit adds `tests/unit/calc.test.js`, which fails at that commit (`add` throws); a later code commit makes it pass | `check` returns `[]`; the command exits `0` |
+| F15-3 | `tests/unit/old.test.js` is at `base`; a test commit only changes it, and it still passes | `check` returns `[]`; the command exits `0` |
+| F15-4 | With the pattern `test_*.py`, a test commit adds `tests/test_calc.py` with one failing and one passing function | `check` returns exactly `["tests/test_calc.py::test_already_passes"]`; the command exits non-zero and prints that ID and not the failing one |
+| F15-5 | A test commit adds `tests/unit/calc.test.js`; the test command is a program no machine has | `check` raises `RunError` naming the file; the command exits non-zero and prints the file and `error of the run` |
+| F15-5 | The same, the test command a file without execute permission | The same |
+| F15-5 | The same (the file fails under Node), the test command a runner that exits `126`, then one that exits `127` | The same, for each |
+| F15-5 | A test commit adds `tests/unit/calc.test.js` holding no test; the runner prints `# tests 0` and exits `0`; `no_test_pattern="^# tests 0$"` | The same |
+| F15-5 (control) | A test commit adds the failing `tests/unit/calc.test.js`; `node --test` with `no_test_pattern="^# tests 0$"` (Node prints `# tests 1`) | `check` returns `[]`; the command exits `0` |
+
 ## F13: Requirement-to-test report (`flowchecks.requirements`)
 
 The check is a module of the `flowchecks/` package, with the same shape
