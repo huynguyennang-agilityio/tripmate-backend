@@ -124,6 +124,10 @@ jobs:
         if: ${{ inputs.setup-command != '' }}
         env:
           SETUP_COMMAND: ${{ inputs.setup-command }}
+        # Runs once here, in the caller's checkout: the backend needs it, because `uv run` in the
+        # worktrees uses UV_PROJECT_ENVIRONMENT, the venv of this checkout. With F16 the setup also
+        # runs in each test commit's own worktree (see the Failing first step; for the backend,
+        # `uv sync --locked` there syncs the shared venv to that commit's lock).
         run: bash -c "$SETUP_COMMAND"
       - name: Start PostgreSQL 16 and Redis 7
         # Real services, so a test that errors only because the database is absent does not
@@ -157,6 +161,7 @@ jobs:
           TEST_COMMAND: ${{ inputs.test-command }}
           TEST_FILE_PATTERN: ${{ inputs.test-file-pattern }}
           NO_TEST_PATTERN: ${{ inputs.no-test-pattern }}
+          SETUP_COMMAND: ${{ inputs.setup-command }}
         run: |
           # A flag is added only when its input differs from the default, so a caller on the
           # defaults (the backend) gives the same command line as before F15, and runs with a
@@ -169,6 +174,18 @@ jobs:
             extra_args+=("--no-test-pattern=$NO_TEST_PATTERN")
           fi
           cd .flowchecks-src
+          # F16: the setup command also runs in each test commit's worktree. A `flowchecks-ref`
+          # older than F16 has no such flag (the backend's own caller pins the pull request's
+          # base, so on F16's own pull request it is older), so the flag is added only when the
+          # input is set and the checked-out code supports it.
+          if [ -n "$SETUP_COMMAND" ]; then
+            help_text="$(uv run --no-project --python 3.13 python -m flowchecks.failing_first --help)"
+            if [[ "$help_text" == *"--setup-command"* ]]; then
+              extra_args+=(--setup-command "$SETUP_COMMAND")
+            else
+              echo "::notice::The flowchecks-ref has no --setup-command (older than F16): the setup runs only once in the checkout."
+            fi
+          fi
           uv run --no-project --python 3.13 python -m flowchecks.failing_first \
             --repo "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA" \
             --test-command "$TEST_COMMAND" "${extra_args[@]}"
