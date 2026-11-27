@@ -20,19 +20,19 @@ from app.platform.idempotency import (
 )
 
 JSON = "application/json"
-KEY = "6f1c2b1e-8f0e-4c55-9d53-0b8a2d6f7a11"
+SAMPLE_UUID = "6f1c2b1e-8f0e-4c55-9d53-0b8a2d6f7a11"
 
 
 @pytest.mark.parametrize(
-    "value", ["not-a-uuid", "12345", "", KEY.replace("-", ""), "{" + KEY + "}"]
+    "value", ["not-a-uuid", "12345", "", SAMPLE_UUID.replace("-", ""), "{" + SAMPLE_UUID + "}"]
 )
 def test_F7_unit_a_key_that_is_not_a_uuid_with_hyphens_is_refused(value: str) -> None:
     assert parse_key(value) is None
 
 
 def test_F7_unit_a_uuid_key_is_parsed_in_any_case() -> None:
-    assert str(parse_key(KEY)) == KEY
-    assert str(parse_key(KEY.upper())) == KEY
+    assert str(parse_key(SAMPLE_UUID)) == SAMPLE_UUID
+    assert str(parse_key(SAMPLE_UUID.upper())) == SAMPLE_UUID
 
 
 def test_F7_unit_json_bodies_with_the_same_fields_have_the_same_hash() -> None:
