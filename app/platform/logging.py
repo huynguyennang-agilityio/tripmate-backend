@@ -32,6 +32,7 @@ import sentry_sdk
 import structlog
 from fastapi import FastAPI, Request
 from opentelemetry import metrics as otel_metrics
+from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -50,7 +51,7 @@ from opentelemetry.sdk.trace.export import (
     SpanExporter,
     SpanExportResult,
 )
-from opentelemetry.trace import Link, Status
+from opentelemetry.trace import Link, Status, StatusCode
 from redis.asyncio import Redis
 from sentry_sdk.transport import Transport
 from sqlalchemy import text
@@ -92,6 +93,9 @@ _NO_REQUEST_DATA: DataCollectionUserOptions = {
 # conventions); the query part is cut off before a span leaves the process.
 _URL_ATTRIBUTES = ("http.url", "url.full", "http.target", "url.path", "http.path")
 _QUERY_ATTRIBUTES = ("url.query", "http.query")
+# Header capture (OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*) would put an Authorization token
+# in a span; no header is ever captured.
+_HEADER_ATTRIBUTE_PREFIXES = ("http.request.header.", "http.response.header.")
 # Libraries whose own INFO line logs a full request URL, query string included.
 _QUIET_LOGGERS = ("httpx", "httpcore")
 
@@ -190,7 +194,7 @@ def _without_query(value: Any) -> Any:
 def _scrub_attributes(attributes: Any) -> dict[str, Any]:
     clean: dict[str, Any] = {}
     for key, value in dict(attributes or {}).items():
-        if key in _QUERY_ATTRIBUTES:
+        if key in _QUERY_ATTRIBUTES or key.startswith(_HEADER_ATTRIBUTE_PREFIXES):
             continue
         clean[key] = _without_query(value) if key in _URL_ATTRIBUTES else value
     return clean
@@ -420,7 +424,12 @@ class Observability:
         """Trace the app's requests. Call before the request ID middleware is added."""
         if self.tracer_provider is not None:
             FastAPIInstrumentor.instrument_app(
-                app, tracer_provider=self.tracer_provider, exclude_spans=["receive", "send"]
+                app,
+                tracer_provider=self.tracer_provider,
+                exclude_spans=["receive", "send"],
+                http_capture_headers_server_request=[],
+                http_capture_headers_server_response=[],
+                http_capture_headers_sanitize_fields=[],
             )
 
     def start(self, engine: AsyncEngine, redis: Redis) -> None:
@@ -456,6 +465,31 @@ class Observability:
                 scope.capture_exception(error)
         except Exception:
             logging.getLogger(__name__).warning("Error reporting failed")
+
+    def record_late_error(self, error: BaseException, server_span: trace.Span) -> None:
+        """Record an error raised after the response started as an `exception` event.
+
+        The instrumentation ends the SERVER span with the response, and a background task runs
+        after that, so the error goes on the span while it is open or else on a short child
+        span of it. The exporter drops the message and the stack of the event.
+        """
+        if self.tracer_provider is None:
+            return
+        try:
+            if server_span.is_recording():
+                server_span.record_exception(error)
+                server_span.set_status(Status(StatusCode.ERROR))
+                return
+            tracer = self.tracer_provider.get_tracer(SERVICE_NAME, self.release)
+            with tracer.start_as_current_span(
+                "error after response",
+                context=trace.set_span_in_context(server_span),
+                kind=trace.SpanKind.INTERNAL,
+            ) as span:
+                span.record_exception(error)
+                span.set_status(Status(StatusCode.ERROR))
+        except Exception:
+            logging.getLogger(__name__).warning("The error could not be put on a span")
 
     # -- shutdown --
 
@@ -570,11 +604,22 @@ class ErrorReportMiddleware:
             return
         request_id = _request_id_of(scope)
         tokens = structlog.contextvars.bind_contextvars(request_id=request_id)
+        started = False
+        server_span = trace.get_current_span()
+
+        async def send_and_note(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
         try:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send_and_note)
         except Exception as error:
             if not isinstance(error, AppError):
                 self.observability.capture_exception(error, request_id)
+                if started:
+                    self.observability.record_late_error(error, server_span)
             raise
         finally:
             structlog.contextvars.reset_contextvars(**tokens)
