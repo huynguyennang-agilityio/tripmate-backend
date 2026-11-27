@@ -48,7 +48,13 @@ from sqlalchemy import CursorResult, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.platform.access import HEALTH_PATH, checked_caller, route_needs_signed_in, signed_in
+from app.platform.access import (
+    HEALTH_PATH,
+    checked_caller,
+    public,
+    route_needs_signed_in,
+    signed_in,
+)
 from app.platform.db import HANDOFF_KEY, SessionHandoff
 from app.platform.errors import (
     FIELD_INVALID,
@@ -69,7 +75,9 @@ REPLAYED_HEADER = "Idempotent-Replayed"
 KEY_PARAMETER = "IdempotencyKey"
 DEVICE_ID_HEADER = "x-device-id"
 # The headers of a response that are stored and replayed (lower case, as in ASGI).
-STORED_HEADERS = ("location", "etag", "content-type")
+STORED_HEADERS = ("location", "etag", "content-type", "retry-after")
+# A response held back for storing is at most this long; a longer one is passed through unstored.
+MAX_STORED_RESPONSE_BYTES = 1024 * 1024
 # A key in flight for longer than this has no live request behind it.
 ABANDONED_AFTER_SECONDS = 60
 # A key older than this is expired, whatever its state.
@@ -93,7 +101,8 @@ def parse_key(value: str) -> uuid.UUID | None:
 
 def _is_json(content_type: str) -> bool:
     media = content_type.split(";")[0].strip().lower()
-    return media == "application/json" or media.endswith("+json")
+    # With no content type FastAPI still parses the body as JSON, so it is hashed as JSON.
+    return media == "" or media == "application/json" or media.endswith("+json")
 
 
 def request_hash(method: str, path: str, content_type: str, body: bytes) -> str:
@@ -166,6 +175,10 @@ _STORE = text(
     "UPDATE idempotency_keys SET status = :status, response_headers = CAST(:headers AS jsonb), "
     "response_body = :body, completed_at = clock_timestamp() "
     "WHERE id = :id AND created_at = :created_at"
+)
+_IS_STORED = text(
+    "SELECT 1 FROM idempotency_keys "
+    "WHERE id = :id AND created_at = :created_at AND status IS NOT NULL"
 )
 _DELETE = text("DELETE FROM idempotency_keys WHERE id = :id AND created_at = :created_at")
 
@@ -278,9 +291,19 @@ async def _store_in_session(
 
 async def _store_alone(
     factory: SessionFactory, claim: Claim, status: int, headers: dict[str, str], body: bytes
-) -> None:
+) -> bool:
+    """Write the response in a transaction of its own; `False` when the claim was taken over."""
     async with factory() as session, session.begin():
-        await _store_in_session(session, claim, status, headers, body)
+        return await _store_in_session(session, claim, status, headers, body)
+
+
+async def _is_stored(factory: SessionFactory, claim: Claim) -> bool:
+    """Whether the claim's row holds a response (after a commit whose outcome is unknown)."""
+    async with factory() as session, session.begin():
+        row = (
+            await session.execute(_IS_STORED, {"id": claim.id, "created_at": claim.created_at})
+        ).first()
+    return row is not None
 
 
 async def _delete(factory: SessionFactory, claim: Claim) -> None:
@@ -364,32 +387,52 @@ class IdempotencyMiddleware:
         start: Message | None = None
         body = bytearray()
         ended = False  # the claim is stored, deleted, or taken over: nothing left to release
+        dropping = False  # the answer was replaced: the app's later messages are dropped
 
         async def hold(message: Message) -> None:
-            nonlocal start, ended
+            nonlocal start, ended, dropping
+            if dropping:
+                return
             claim = _claim_of(scope)
-            if message["type"] == "http.response.start" and claim is not None:
+            kind = message["type"]
+            if kind == "http.response.start" and claim is not None and not ended:
                 start = message
             elif start is None or claim is None or ended:
                 await send(message)
-            elif message["type"] == "http.response.body":
+            elif kind == "http.response.body":
                 body.extend(message.get("body", b""))
-                if not message.get("more_body", False):
+                more = bool(message.get("more_body", False))
+                if len(body) > MAX_STORED_RESPONSE_BYTES:  # too long to hold: not stored
+                    ended = True
+                    with anyio.CancelScope(shield=True):
+                        dropping = not await self._pass_through(scope, receive, send, claim, start)
+                    if not dropping:
+                        await send({**message, "body": bytes(body)})
+                elif not more:
                     ended = True
                     # A client that disconnects must not stop the store or the commit halfway.
                     with anyio.CancelScope(shield=True):
                         await self._end(scope, receive, send, claim, start, bytes(body))
-            else:
-                await send(message)
+            else:  # `http.response.pathsend` and the like: the body is not in the message
+                ended = True
+                with anyio.CancelScope(shield=True):
+                    dropping = not await self._pass_through(scope, receive, send, claim, start)
+                if not dropping:
+                    if body:
+                        await send(
+                            {"type": "http.response.body", "body": bytes(body), "more_body": True}
+                        )
+                    await send(message)
 
         try:
             await self.app(scope, receive, hold)
-        except BaseException:
+        finally:
+            # The app ended without its whole response (a client that disconnected, or an error):
+            # give the key and the transaction back.
             claim = _claim_of(scope)
             if claim is not None and not ended:
                 with anyio.CancelScope(shield=True):
                     await self._release(scope, claim)
-            raise
 
     @staticmethod
     def _factory(scope: Scope) -> SessionFactory:
@@ -404,6 +447,29 @@ class IdempotencyMiddleware:
         except Exception:
             logger.exception("Could not release idempotency key row %s", claim.id)
 
+    async def _pass_through(
+        self, scope: Scope, receive: Receive, send: Send, claim: Claim, start: Message
+    ) -> bool:
+        """End the claim without storing the response, then send its start.
+
+        A `2xx`/`3xx` still commits the handler's transaction; the row is deleted so the key is
+        free. `False` when it failed: a `500` was sent instead and the app's messages are dropped.
+        """
+        refused = bool(scope.get("state", {}).get(SCHEMA_REFUSED_KEY))
+        try:
+            if start["status"] < 400 and not refused:
+                await claim.handoff.commit()
+            else:
+                await claim.handoff.rollback()
+            await _delete(self._factory(scope), claim)
+        except Exception:
+            logger.exception("Could not end idempotency key row %s", claim.id)
+            await self._release(scope, claim)
+            await self._answer(scope, receive, send, AppError(500, SERVER_ERROR))
+            return False
+        await send(start)
+        return True
+
     async def _end(
         self, scope: Scope, receive: Receive, send: Send, claim: Claim, start: Message, body: bytes
     ) -> None:
@@ -416,7 +482,10 @@ class IdempotencyMiddleware:
                 await _delete(factory, claim)
             elif status >= 400:  # the handler's own refusal, stored after its changes are undone
                 await claim.handoff.rollback()
-                await _store_alone(factory, claim, status, stored_headers(start["headers"]), body)
+                headers = stored_headers(start["headers"])
+                if not await _store_alone(factory, claim, status, headers, body):
+                    await self._answer(scope, receive, send, AppError(409, IDEMPOTENCY_IN_PROGRESS))
+                    return
             elif not await self._store_success(factory, claim, start, body):
                 await self._answer(scope, receive, send, AppError(409, IDEMPOTENCY_IN_PROGRESS))
                 return
@@ -437,12 +506,21 @@ class IdempotencyMiddleware:
         headers = stored_headers(start["headers"])
         session = claim.handoff.session
         if session is None:  # the handler used no session: nothing to commit with it
-            await _store_alone(factory, claim, start["status"], headers, body)
-            return True
+            return await _store_alone(factory, claim, start["status"], headers, body)
         if not await _store_in_session(session, claim, start["status"], headers, body):
             await claim.handoff.rollback()
             return False
-        await claim.handoff.commit()
+        try:
+            await claim.handoff.commit()
+        except Exception:
+            # The outcome may be unknown (the connection broke after the commit was sent): the
+            # row says. Kept when it holds the response, else the caller deletes it.
+            if await _is_stored(factory, claim):
+                logger.warning(
+                    "Commit of idempotency key row %s failed but its response is stored", claim.id
+                )
+                return True
+            raise
         return True
 
     @staticmethod
@@ -456,6 +534,50 @@ def install_idempotency(app: FastAPI) -> None:
     """Install the replay answer and the middleware (inside the device ID and request ID ones)."""
     app.add_exception_handler(Replay, _replay_handler)
     app.add_middleware(IdempotencyMiddleware)
+
+
+# -- The order of the declaration -----------------------------------------------------------
+
+
+def _allowed_after_idempotent(call: Any) -> bool:
+    """What may follow `idempotent` in a route's dependencies: it never answers a `4xx` there.
+
+    `public` checks nothing; `signed_in` was checked before (the general ceiling), and a route's
+    own rate limit was counted with the ceiling. Any other dependency (a capability, a lookup)
+    must come first, or its refusal would be stored as the handler's.
+    """
+    return call is public or call is signed_in or hasattr(call, "route_limit")
+
+
+def misplaced_idempotent(app: FastAPI) -> list[str]:
+    """Each route (`METHOD /path`) with a dependency after `idempotent` that may refuse."""
+    found: list[str] = []
+    for context in iter_route_contexts(app.routes):
+        route = context.original_route
+        if not isinstance(route, APIRoute):
+            continue
+        calls = [depends.dependency for depends in route.dependencies]
+        if idempotent not in calls:
+            continue
+        after = calls[calls.index(idempotent) + 1 :]
+        if any(not _allowed_after_idempotent(call) for call in after):
+            found.extend(f"{method} {context.path}" for method in sorted(context.methods or ()))
+    return sorted(found)
+
+
+def check_idempotent_order(app: FastAPI) -> None:
+    """Fail at start-up when `idempotent` is not the last dependency of a route that declares it.
+
+    The key is claimed where `idempotent` runs; a `4xx` raised by a dependency after it would be
+    stored as the handler's answer (spec 2.4), so such a dependency must be declared before it.
+    """
+    misplaced = misplaced_idempotent(app)
+    if misplaced:
+        raise RuntimeError(
+            "Depends(idempotent) must be the last of a route's dependencies (a refusal after it "
+            "is stored and replayed); declare it after the access and guard dependencies of: "
+            + ", ".join(misplaced)
+        )
 
 
 # -- The contract --------------------------------------------------------------------------
@@ -485,6 +607,25 @@ def _error_response(description: str) -> dict[str, Any]:
         "description": description,
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
     }
+
+
+IDEMPOTENCY_409_TEXT = "The key was used for another request, or its request is still running"
+
+
+def _document_409(responses: dict[str, Any]) -> None:
+    """Add the idempotency `409` to an operation, keeping the route's own description and
+    content (its examples)."""
+    existing = responses.get("409")
+    if existing is None:
+        responses["409"] = _error_response(IDEMPOTENCY_409_TEXT)
+        return
+    description = existing.get("description")
+    if not description:
+        existing["description"] = IDEMPOTENCY_409_TEXT
+    elif IDEMPOTENCY_409_TEXT not in description:
+        existing["description"] = f"{description}. {IDEMPOTENCY_409_TEXT}"
+    content = existing.setdefault("content", {}).setdefault("application/json", {})
+    content.setdefault("schema", {"$ref": "#/components/schemas/ErrorResponse"})
 
 
 def install_idempotency_contract(app: FastAPI) -> None:
@@ -519,9 +660,7 @@ def install_idempotency_contract(app: FastAPI) -> None:
                 )
                 responses = operation["responses"]
                 responses.setdefault("400", _error_response("The request is not valid"))
-                responses["409"] = _error_response(
-                    "The key was used for another request, or its request is still running"
-                )
+                _document_409(responses)
         return schema
 
     app.openapi = openapi  # type: ignore[method-assign]

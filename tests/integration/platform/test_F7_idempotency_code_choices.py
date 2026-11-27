@@ -174,3 +174,88 @@ async def test_F7_extra_request_whose_claim_was_taken_over_answers_409_and_its_w
     assert rows[0]["status"] == 201, rows
     assert as_json(rows[0]["response_body"]) == new.json(), rows
     assert_replay_of(after, new, "the same key after both finished")
+
+
+async def test_F7_extra_3xx_response_is_stored_in_the_handlers_transaction_and_replayed(
+    services, module_folder, probe_table
+) -> None:
+    services()
+    probe = write_probe(module_folder, probe_table)
+    device, key = new_device(), new_key()
+
+    async with _client(build_app()) as client:
+        first = await client.post(probe.path("redirects"), json=BODY, headers=headers(device, key))
+        again = await client.post(probe.path("redirects"), json=BODY, headers=headers(device, key))
+
+    assert_status(first, 303, "the handler returns 303")
+    assert again.status_code == 303 and again.headers.get("Idempotent-Replayed") == "true"
+    assert again.headers["Location"] == first.headers["Location"]
+    assert probe.calls() == ["redirects"]
+    assert len(await stored_markers(probe_table)) == 1, "the record of a 3xx was not committed"
+    rows = await key_rows(key)
+    assert [row["status"] for row in rows] == [303], rows
+
+
+async def test_F7_extra_two_first_requests_with_a_new_key_at_once_run_the_handler_once(
+    services, module_folder, probe_table
+) -> None:
+    services()
+    probe = write_probe(module_folder, probe_table)
+    device, key = new_device(), new_key()
+
+    async with _client(build_app()) as client:
+        responses = await asyncio.gather(
+            *[
+                client.post(probe.path("records"), json=BODY, headers=headers(device, key))
+                for _ in range(2)
+            ]
+        )
+
+    by_status = sorted(response.status_code for response in responses)
+    assert by_status in ([201, 201], [201, 409]), [r.text for r in responses]
+    for response in responses:
+        if response.status_code == 409:
+            assert_error(response, 409, IN_PROGRESS, "the second request at once")
+        elif response.headers.get("Idempotent-Replayed"):
+            assert response.json()["id"] in await stored_markers(probe_table)
+    assert probe.calls() == ["records"], "the handler ran twice for one key"
+    assert len(await stored_markers(probe_table)) == 1
+    assert len(await key_rows(key)) == 1
+
+
+async def test_F7_extra_response_longer_than_the_limit_is_passed_through_unstored_and_committed(
+    services, module_folder, probe_table
+) -> None:
+    services()
+    probe = write_probe(module_folder, probe_table)
+    device, key = new_device(), new_key()
+
+    async with _client(build_app()) as client:
+        first = await client.post(probe.path("big"), json=BODY, headers=headers(device, key))
+        rows_after = await key_rows(key)
+        again = await client.post(probe.path("big"), json=BODY, headers=headers(device, key))
+
+    assert_status(first, 201, "a response over the limit")
+    assert len(first.json()["padding"]) > 1024 * 1024
+    assert await stored_markers(probe_table) == sorted([first.json()["id"], again.json()["id"]]), (
+        "the handler's transaction was not committed, or the retry did not run"
+    )
+    assert rows_after == [], "a response over the limit was stored"
+    assert_not_replayed(again, "the retry of a response that was not stored")
+    assert probe.calls() == ["big", "big"]
+
+
+async def test_F7_extra_handler_that_uses_no_session_stores_its_response_and_replays_it(
+    services, module_folder, probe_table
+) -> None:
+    services()
+    probe = write_probe(module_folder, probe_table)
+    device, key = new_device(), new_key()
+
+    async with _client(build_app()) as client:
+        first = await client.post(probe.path("no-session"), json=BODY, headers=headers(device, key))
+        again = await client.post(probe.path("no-session"), json=BODY, headers=headers(device, key))
+
+    assert_status(first, 201, "a handler with no session")
+    assert_replay_of(again, first, "the same key and body")
+    assert probe.calls() == ["no-session"]

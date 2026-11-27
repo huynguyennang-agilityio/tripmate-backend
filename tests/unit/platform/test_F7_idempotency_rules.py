@@ -112,3 +112,19 @@ def test_F7_unit_only_location_etag_and_content_type_are_stored() -> None:
         "location": "/v1/x/1",
         "etag": '"abc"',
     }
+
+
+# -- Round 1 -------------------------------------------------------------------------------
+
+
+def test_F7_unit_retry_after_is_a_stored_header() -> None:
+    assert stored_headers([(b"retry-after", b"7"), (b"x-other", b"1")]) == {"retry-after": "7"}
+
+
+def test_F7_unit_a_body_with_no_content_type_is_hashed_as_json() -> None:
+    # FastAPI parses a body with no content type as JSON, so field order and spacing do not matter.
+    assert request_hash("POST", "/v1/a", "", b'{"a":1,"b":2}') == request_hash(
+        "POST", "/v1/a", "", b'{ "b": 2, "a": 1 }'
+    )
+    # Not JSON after all: its bytes.
+    assert request_hash("POST", "/v1/a", "", b"a  b") != request_hash("POST", "/v1/a", "", b"a b")

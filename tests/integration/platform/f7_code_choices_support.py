@@ -24,6 +24,28 @@ async def slow_once(record: Record, session: Session, response: Response) -> dic
     return {"id": record_id, "name": record.name}
 
 
+@router.post("/__SEGMENT__/redirects", status_code=201, dependencies=OPEN)
+async def redirects(record: Record, session: Session, response: Response) -> Response:
+    CALLS.append("redirects")
+    record_id = await write_record(session, response)
+    return Response(
+        status_code=303, headers={"Location": "/v1/__SEGMENT__/records/" + record_id}
+    )
+
+
+@router.post("/__SEGMENT__/big", status_code=201, dependencies=OPEN)
+async def big(record: Record, session: Session, response: Response) -> dict[str, str]:
+    CALLS.append("big")
+    record_id = await write_record(session, response)
+    return {"id": record_id, "padding": "x" * (1024 * 1024 + 10)}
+
+
+@router.post("/__SEGMENT__/no-session", status_code=201, dependencies=OPEN)
+async def no_session(record: Record) -> dict[str, str]:
+    CALLS.append("no-session")
+    return {"name": record.name}
+
+
 @router.post("/__SEGMENT__/returns-4xx", status_code=201, dependencies=OPEN)
 async def returns_4xx(record: Record, session: Session, response: Response) -> Response:
     CALLS.append("returns-4xx")
