@@ -4,10 +4,11 @@
   route except the health check, for the IP address and, on a `signed_in` route, also for the
   user (the token's `sub`). `install_rate_limits` adds it to the app as a dependency of every
   route. It runs after the device ID check (a middleware). Step 1 counts the IP address and the
-  route's own limits, before the token check, so requests with a bad token are limited too.
-  Step 2, on a `signed_in` route, runs the token check (`signed_in`, whose answer the route then
-  reuses) and counts the user. A request for no route (404, 405) is not counted; a request over
-  a limit is.
+  route's own limits (on a `public` route), before the token check, so requests with a bad token
+  are limited too. Step 2, on a `signed_in` route, runs the token check (`signed_in`, whose
+  answer the route then reuses) and counts the user and the route's own limits, so no limit is
+  used up by requests with no valid token and a key can name the user (`checked_caller`). A
+  request for no route (404, 405) is not counted; a request over a limit is.
 - `rate_limit(limit=, window_seconds=, key=)` is a dependency a route adds for its own limit;
   `key` makes the key from the request (a module puts its name in it). It runs before the body
   is read.
@@ -180,26 +181,36 @@ async def general_ceiling(request: Request) -> None:
     """The general ceiling: a dependency of every route (see `install_rate_limits`).
 
     Step 1, before the token check: the IP address (unless the ceiling is off or this is the
-    health check) and the route's own limits, counted together, so a request over several is
-    answered once, with the longest wait. Each limit counted is marked, so its own check skips
-    it. Step 2, on a `signed_in` route: the token check, then the user.
+    health check), and on a `public` route the route's own limits too. Step 2, on a `signed_in`
+    route: the token check, then the user (unless the ceiling is off) and the route's own limits,
+    so a request with no valid token never uses up a route's quota and a limit's key can name the
+    user (`checked_caller`). The limits of a step are counted together, so a request over several
+    is answered once, with the longest wait. Each route limit counted is marked, so its own check
+    skips it.
     """
     ceiling: int = request.app.state.settings.rate_limit_per_minute
     counting = ceiling != 0 and request.url.path != HEALTH_PATH
     route = request.scope.get("route")
     own = _own_limits(route.dependant) if isinstance(route, APIRoute) else []
+    signed = route_needs_signed_in(request)
+    redis = request.app.state.resources.redis
     counts: list[Count] = []
     if counting:
         connection = request.client.host if request.client else None
         forwarded = ", ".join(request.headers.getlist(FORWARDED_HEADER))
         counts.append((f"ip:{client_ip(forwarded, connection)}", ceiling, CEILING_WINDOW_SECONDS))
-    counts.extend(limit.count(request) for limit in own)
-    _counted(request).update(id(limit) for limit in own)
-    redis = request.app.state.resources.redis
+    if not signed:
+        counts.extend(limit.count(request) for limit in own)
+        _counted(request).update(id(limit) for limit in own)
     await enforce(redis, counts)
-    if counting and route_needs_signed_in(request):
+    if signed:
         caller = await signed_in(request)  # the route reuses this answer
-        await enforce(redis, [(f"user:{caller.user_id}", ceiling, CEILING_WINDOW_SECONDS)])
+        counts = []
+        if counting:
+            counts.append((f"user:{caller.user_id}", ceiling, CEILING_WINDOW_SECONDS))
+        counts.extend(limit.count(request) for limit in own)
+        _counted(request).update(id(limit) for limit in own)
+        await enforce(redis, counts)
 
 
 def install_rate_limits(app: FastAPI) -> None:

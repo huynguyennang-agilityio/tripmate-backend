@@ -24,6 +24,7 @@ from redis.exceptions import NoScriptError
 from app.platform import rate_limits
 from app.platform.access import (
     Caller,
+    checked_caller,
     install_access_contract,
     install_access_keys,
     install_device_id,
@@ -356,6 +357,19 @@ def _app(
         ran.append("own")
         return {}
 
+    def by_user(request: Request) -> str:
+        caller = checked_caller(request)
+        assert caller is not None
+        return f"mine:{caller.user_id}"
+
+    @app.get(
+        "/v1/mine",
+        dependencies=[Depends(rate_limit(limit=2, window_seconds=30, key=by_user))],
+    )
+    async def mine(caller: Annotated[Caller, Depends(signed_in)]) -> dict[str, str]:
+        ran.append("mine")
+        return {}
+
     @app.get("/v1/attempt", dependencies=[Depends(public)])
     async def attempt(request: Request, ok: bool = True) -> dict[str, str]:
         ran.append("attempt")
@@ -509,7 +523,7 @@ def test_F6_every_operation_but_health_documents_429_with_retry_after_and_503() 
             assert unavailable["description"] == "A service the request needs is down"
             assert unavailable["content"]["application/json"]["schema"] == ERROR_REF
             assert "headers" not in unavailable
-    assert seen == 5
+    assert seen == 6
 
 
 def test_F6_a_response_already_documented_is_not_overwritten() -> None:
@@ -626,3 +640,59 @@ def test_F6_the_counted_limits_are_kept_in_the_requests_state_under_a_private_ke
     rate_limits._counted(request).add(7)
     assert rate_limits._counted(request) == {7}
     assert request.scope["state"] == {"_tripmate_platform_rate_limits_counted": {7}}
+
+
+async def test_F6_requests_with_no_valid_token_do_not_use_up_a_signed_in_routes_own_limit() -> None:
+    key = Ed25519PrivateKey.generate()
+    user = uuid.uuid4()
+    redis = FakeRedis()
+    app, ran = _app(key, redis, ceiling="0")
+    auth = {"Authorization": f"Bearer {_token(key, user)}"}
+    async with _client(app) as client:
+        bad = [await client.get("/v1/mine", headers=_headers()) for _ in range(3)]
+        bad += [
+            await client.get("/v1/mine", headers=_headers(Authorization="Bearer nope"))
+            for _ in range(3)
+        ]
+        good = [await client.get("/v1/mine", headers=_headers(**auth)) for _ in range(3)]
+    assert [r.status_code for r in bad] == [401] * 6
+    assert redis.calls[0][2] == f"rate:route:mine:{user}"  # nothing was counted before
+    assert [r.status_code for r in good] == [200, 200, 429]
+    assert ran == ["mine", "mine"]
+    assert redis.counts == {f"rate:route:mine:{user}": 3}
+
+
+async def test_F6_a_signed_in_routes_limit_keyed_by_the_user_counts_each_user_on_their_own() -> (
+    None
+):
+    key = Ed25519PrivateKey.generate()
+    first, second = uuid.uuid4(), uuid.uuid4()
+    redis = FakeRedis()
+    app, _ = _app(key, redis, ceiling="50")
+    async with _client(app) as client:
+        a = [
+            await client.get(
+                "/v1/mine", headers=_headers(Authorization=f"Bearer {_token(key, first)}")
+            )
+            for _ in range(3)
+        ]
+        b = await client.get(
+            "/v1/mine", headers=_headers(Authorization=f"Bearer {_token(key, second)}")
+        )
+    assert [r.status_code for r in a] == [200, 200, 429]
+    assert b.status_code == 200
+    assert redis.counts[f"rate:route:mine:{first}"] == 3
+    assert redis.counts[f"rate:route:mine:{second}"] == 1
+    # the user and the route's own key are counted in one round trip, after the IP address
+    assert redis.calls[1][1] == 2
+
+
+def test_F6_checked_caller_is_none_without_a_checked_token_and_the_caller_after_one() -> None:
+    app = _app_with(FakeRedis())
+    assert checked_caller(_request(app)) is None  # no state in the scope at all
+    request = _request(app)
+    request.scope["state"] = {"_tripmate_platform_caller": "not a caller"}
+    assert checked_caller(request) is None
+    caller = Caller(uuid.uuid4(), uuid.uuid4())
+    request.scope["state"] = {"_tripmate_platform_caller": caller}
+    assert checked_caller(request) is caller

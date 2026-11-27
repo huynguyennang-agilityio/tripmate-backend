@@ -165,11 +165,17 @@ def _claims(token: str, keys: tuple[Ed25519PublicKey, ...]) -> dict[str, Any]:
     raise AppError(401, NOT_SIGNED_IN)
 
 
+def checked_caller(request: Request) -> Caller | None:
+    """The caller `signed_in` has already checked in this request, or `None` (for a rate limit key)."""
+    cached = request.scope.get("state", {}).get(_CALLER_KEY)
+    return cached if isinstance(cached, Caller) else None
+
+
 @declares_access
 async def signed_in(request: Request) -> Caller:
     """Declares a route for a signed-in user, checks the token and session, returns the caller."""
-    cached = request.scope.get("state", {}).get(_CALLER_KEY)
-    if isinstance(cached, Caller):  # the general ceiling already checked this request
+    cached = checked_caller(request)
+    if cached is not None:  # the general ceiling already checked this request
         return cached
     token = _bearer_token(request)
     claims = _claims(token, request.app.state.access_keys)
