@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -62,9 +63,11 @@ async def test_F1_7_new_module_folder_with_api_py_gets_its_route_served(
     path = f"{MODULE_PREFIX}/{segment}"
     (APP_DIR / name / "api.py").write_text(API_SOURCE.format(segment=segment), encoding="utf-8")
 
+    # X-Device-Id is asked for on every request but the health check (F5, spec section 2.2).
+    headers = {"X-Device-Id": str(uuid.uuid4())}
     app = build_app()
     async with client_for(app) as client:
-        response = await client.get(path)
+        response = await client.get(path, headers=headers)
     assert response.status_code == 200, f"GET {path}: {response.status_code} {response.text}"
     assert response.json() == {"probe": segment}
 
@@ -72,7 +75,7 @@ async def test_F1_7_new_module_folder_with_api_py_gets_its_route_served(
     assert ending == [path], f"expected only {path} in the OpenAPI paths, found {ending}"
 
     async with client_for(app_without_folder) as client:
-        response = await client.get(path)
+        response = await client.get(path, headers=headers)
     assert response.status_code == 404, f"GET {path} without the folder: {response.status_code}"
 
     # Adding the module changed no file outside its folder.

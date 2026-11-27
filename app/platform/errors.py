@@ -40,10 +40,13 @@ FIELD_MISSING = "request.field_missing"
 FIELD_INVALID = "request.field_invalid"
 NOT_FOUND = "request.not_found"
 METHOD_NOT_ALLOWED = "request.method_not_allowed"
+NOT_SIGNED_IN = "auth.not_signed_in"
+TOKEN_EXPIRED = "auth.token_expired"  # noqa: S105 (an error code)
 
 # Codes the platform returns itself; each needs text in `tripmate-contracts`.
 # (`server.unavailable` is returned by the health check and the rate limit, cards F1 and F6;
-# `server.not_implemented` by a stub route, card F12.)
+# `server.not_implemented` by a stub route, card F12; the two `auth.` codes by the access check,
+# card F5.)
 # The two field codes are all a `fields` entry can carry, so the set stays closed.
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -55,6 +58,8 @@ PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
         FIELD_INVALID,
         NOT_FOUND,
         METHOD_NOT_ALLOWED,
+        NOT_SIGNED_IN,
+        TOKEN_EXPIRED,
     }
 )
 

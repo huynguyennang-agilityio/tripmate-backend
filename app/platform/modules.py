@@ -22,6 +22,7 @@ checked by `flowchecks.error_codes` (card F4): each needs text in both languages
 from __future__ import annotations
 
 import importlib
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,8 @@ NOT_MODULES = frozenset({"platform"})
 Job = Callable[..., Awaitable[object]]
 EventHandler = Callable[..., Awaitable[object]]
 DueWorkQuery = Callable[..., Awaitable[object]]
+# Asked with the token's session ID: is the session still active? (`identity`, EPIC-01)
+SessionHook = Callable[[uuid.UUID], Awaitable[bool]]
 
 
 @dataclass
@@ -50,6 +53,8 @@ class Registry:
     due_work: list[DueWorkQuery] = field(default_factory=list)
     # Codes of the form `<area>.<reason>` that the module can return.
     error_codes: set[str] = field(default_factory=set)
+    # The one hook that tells the access check whether a session is active.
+    session_hook: SessionHook | None = None
 
     def add_job(self, job: Job) -> None:
         self.jobs.append(job)
@@ -59,6 +64,12 @@ class Registry:
 
     def add_due_work(self, query: DueWorkQuery) -> None:
         self.due_work.append(query)
+
+    def set_session_hook(self, hook: SessionHook) -> None:
+        """Register the session check (`identity`); a second one is an error."""
+        if self.session_hook is not None:
+            raise ValueError("a session hook is already registered")
+        self.session_hook = hook
 
     def add_error_codes(self, *codes: str) -> None:
         self.error_codes.update(codes)

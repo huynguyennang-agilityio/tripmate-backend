@@ -27,6 +27,10 @@ What the tests need from the code, and nothing more, card by card:
   api-design.md, sections 4.1 and 6, and the task's scope, version 1.7
   (cases F12-1 to F12-3; F12-4 to F12-6 are manual checks), in the
   section "F12: Contract publishing".
+- F5 Access declaration and token check: from the EPIC-11 spec, section
+  2.2 (rows "Device ID", "Access declaration", "Token check") and 2.3,
+  security.md, section 2 (row "Access token"), and api-design.md,
+  sections 2 and 4.2 (cases F5-1 to F5-10), in the section "F5: Access".
 
 ## Running the tests
 
@@ -978,3 +982,139 @@ python -m app.platform.contract check <openapi.json path>
 | F12-2 (C) | A module folder whose `api.py` declares one stub with an example | The generated contract has `x-stub: true` on `GET /v1/<segment>`, and not on `GET /v1/health` |
 | F12-2 (A) | The same module, the app built with `create_app()` (PostgreSQL and Redis on closed ports) | `GET /v1/<segment>` returns `501` with `{"error": {"code": "server.not_implemented", "params", "fields", "requestId"}}` |
 | F12-3 | Control: one stub with an example. Then a second stub, `GET /v1/bare-<segment>`, whose response model has none | Control: `check_examples` gives `[]`, `check` exits `0`. Then: `check_examples` gives messages, one naming `GET /v1/bare-<segment>` and none naming `GET /v1/<segment>`; `check` exits non-zero and its output names the bare stub and not the other |
+
+## F5: Access
+
+The tests are in `tests/api/platform/test_F5_access.py` (F5-1 to F5-10,
+level A) and `tests/api/platform/test_F5_access_declaration.py` (the
+declaration test itself, which CI runs over the real app). A temporary
+module under `app/` (the `module_folder` fixture) serves the routes and
+registers the session hook; the app is called in-process
+(`client_for(build_app())`) with the settings of `set_settings()`, so no
+route of the tests uses PostgreSQL or Redis, except F5-10, which uses the
+real ones (as F1-1).
+
+### F5: Declaring access
+
+Every route declares its access with a FastAPI dependency from
+`app.platform.access` (spec 2.2, row "Access declaration"; the names are
+the tests' choice, as the spec names none):
+
+```python
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+
+from app.platform.access import Caller, public, signed_in
+
+router = APIRouter()
+
+
+@router.get("/open", dependencies=[Depends(public)])
+async def open_route() -> dict[str, str]: ...
+
+
+@router.get("/me")
+async def me(caller: Annotated[Caller, Depends(signed_in)]) -> dict[str, str]:
+    return {"userId": str(caller.user_id), "sessionId": str(caller.session_id)}
+```
+
+- `public`: a dependency that checks nothing (no token is read).
+- `signed_in`: a dependency that runs the token check below and returns
+  a `Caller`. `Depends(signed_in)` in `dependencies=[...]` declares the
+  route too, for a handler that does not need the caller.
+- `Caller`: `user_id: uuid.UUID` and `session_id: uuid.UUID`, the
+  token's user ID and session ID (security.md, section 2: the access
+  token holds only these two).
+- A capability (security.md, section 3.2) is out of scope for F5; its
+  form is left to EPIC-02.
+
+### F5: The declaration test
+
+```python
+from app.platform.access import undeclared_routes
+
+undeclared: list[str] = undeclared_routes(app)   # app = create_app()
+```
+
+- It returns one entry for each route of `app` that declares neither
+  `public`, `signed_in`, nor a capability; each entry names the route by
+  its full path (for example `GET /v1/<segment>/undeclared`). `[]` when
+  every route declares its access. Whether FastAPI's own OpenAPI and docs
+  pages are listed is the code's choice; they are not module routes, and
+  the real app must give `[]`.
+- `test_F5_every_route_declares_its_access` asserts
+  `undeclared_routes(create_app()) == []` and puts the list in its
+  failure message. It is the test that fails CI (spec 2.2).
+- F5-1 runs that test in a new `python -m pytest <node id>` process from
+  the repository root, with the test's environment: it exits `0` while
+  the temporary module's routes all declare their access, and exits `1`
+  once the module adds an undeclared route, with the route's path in its
+  output and no declared route's path.
+
+### F5: The device ID
+
+`X-Device-Id: <uuid>` (api-design.md, section 2) is required on every
+request except the health check `GET /v1/health`; missing, or not a
+UUID (the tests send `not-a-uuid`), the answer is `400 request.invalid`
+in the error format of F4. It is checked before the access declaration
+(spec 2.2 runs the steps in order), so a `signed_in` route with a valid
+token and no device ID is `400`, not `401`.
+
+### F5: The token check
+
+- The token comes as `Authorization: Bearer <access token>`
+  (api-design.md, section 2).
+- It is a JWT signed with EdDSA over Ed25519 (security.md, section 2),
+  header `{"alg": "EdDSA", "typ": "JWT"}` with no `kid`, and these claims
+  (the claim names are the tests' choice):
+
+  | Claim | Value |
+  |-------|-------|
+  | `sub` | The user ID, a UUID as a string |
+  | `sid` | The session ID, a UUID as a string |
+  | `iat` | Issued at, seconds since the epoch |
+  | `exp` | Expiry, seconds since the epoch; 15 minutes after `iat` unless a case says otherwise |
+
+- The public keys the app trusts come from the setting
+  `ACCESS_TOKEN_PUBLIC_KEYS`: one or more Ed25519 public keys, each a PEM
+  block (`-----BEGIN PUBLIC KEY-----`, SubjectPublicKeyInfo), one after
+  the other (security.md, section 2: a new public key is published next
+  to the old one). The tests make a new key pair in each test and set
+  only the public key, after `set_settings()`. The setting is optional
+  for the app to start: the tests of other cards do not set it.
+- A token is accepted only when its signature checks with one of the
+  keys under `EdDSA` and the time is before `exp`, with no leeway
+  (F5-8: one second past `exp` is expired).
+- Then `identity` is asked whether the session is active, through the
+  hook a module registers in its `register(registry)`
+  (`app/platform/modules.py`):
+
+  ```python
+  # app/<module>/__init__.py
+  async def session_is_active(session_id: uuid.UUID) -> bool: ...
+
+  def register(registry):
+      registry.set_session_hook(session_is_active)
+  ```
+
+  It is called with the token's `sid` as a `uuid.UUID` on every request
+  to a non-`public` route whose token passed the checks above.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F5-2 | `signed_in` route; valid token; hook says active | `200`; the handler's `Caller` holds the token's `sub` and `sid`; the hook was asked about `sid` |
+| F5-3 | `public` route, no `Authorization` | `200` |
+| F5-4 | `signed_in` route, no `Authorization` | `401 auth.not_signed_in` |
+| F5-5 | `exp` 60 seconds ago | `401 auth.token_expired` |
+| F5-6 | Signed with another Ed25519 key; or header `{"alg": "none"}` and an empty signature | `401 auth.not_signed_in`, both |
+| F5-7 | Valid token; the hook returns `False` for its `sid` | `401 auth.token_expired` |
+| F5-8 | `exp` at least one second ahead; then `exp` at least one second past | `200`, then `401 auth.token_expired` |
+| F5-9 | `public` route, and `signed_in` route with a valid token: no `X-Device-Id`, or `not-a-uuid` | `400 request.invalid`, all four |
+| F5-10 | `GET /v1/health`, no `X-Device-Id`, real PostgreSQL and Redis | `200`; on the same app, a `public` route with no `X-Device-Id` is `400 request.invalid` |
+
+Each error body is exactly `{"error": {"code", "params", "fields",
+"requestId"}}` (F4).
+
+- F1-7's probe route (section "Modules found by scanning") declares no
+  access; its requests carry a valid `X-Device-Id` from F5 on.

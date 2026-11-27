@@ -6,6 +6,7 @@ An `AppError` raised by a middleware, errors from `HTTPException`, and the OpenA
 from __future__ import annotations
 
 import re
+import uuid
 
 import pytest
 from starlette.middleware import Middleware
@@ -13,6 +14,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.platform.errors import AppError
 from tests.support import APP_DIR, build_app, client_for
+
+# F5 requires a device ID on every request but the health check.
+DEVICE = {"X-Device-Id": str(uuid.uuid4())}
 
 ERROR_KEYS = {"code", "params", "fields", "requestId"}
 
@@ -83,7 +87,7 @@ async def test_F4_r1_app_error_from_a_middleware_keeps_status_and_body(
     app.user_middleware.append(Middleware(RaisingMiddleware))  # the innermost user middleware
 
     async with client_for(app, raise_app_exceptions=False) as client:
-        response = await client.get(f"{base}/ok")
+        response = await client.get(f"{base}/ok", headers=DEVICE)
 
     assert response.status_code == 429, response.text
     error = _error_of(response)
@@ -99,8 +103,8 @@ async def test_F4_r1_unknown_route_and_wrong_method_use_the_error_format(
     base = _probe(module_folder)
 
     async with client_for(build_app()) as client:
-        missing = await client.get("/v1/no-such-route")
-        wrong_method = await client.put(f"{base}/ok")
+        missing = await client.get("/v1/no-such-route", headers=DEVICE)
+        wrong_method = await client.put(f"{base}/ok", headers=DEVICE)
 
     assert missing.status_code == 404
     assert _error_of(missing)["code"] == "request.not_found"
@@ -117,10 +121,10 @@ async def test_F4_r1_other_http_exceptions_are_unexpected_500_server_error(
     base = _probe(module_folder)
 
     async with client_for(build_app()) as client:
-        client_error = await client.get(f"{base}/teapot")
-        server_error = await client.get(f"{base}/broken")
+        client_error = await client.get(f"{base}/teapot", headers=DEVICE)
+        server_error = await client.get(f"{base}/broken", headers=DEVICE)
         # HTTPBearer raises HTTPException(401 or 403) when the header is missing.
-        unauthorized = await client.get(f"{base}/secure")
+        unauthorized = await client.get(f"{base}/secure", headers=DEVICE)
 
     for response in (client_error, server_error, unauthorized):
         assert response.status_code == 500, response.text
