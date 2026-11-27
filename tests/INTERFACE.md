@@ -42,6 +42,10 @@ What the tests need from the code, and nothing more, card by card:
 - F16 Failing first sets up each test commit: from the EPIC-11 spec,
   section 2.12, and the task (cases F16-1 to F16-4), in the section
   "F16: Failing first sets up each test commit".
+- F10 Logs, traces, metrics, and error reporting: from the EPIC-11 spec,
+  version 3.3, sections 2.6 (with its row "Settings"), 2.7, 4.1, and the
+  three F10 decisions in 5.1 (cases F10-1 to F10-6), in the section
+  "F10: Observability".
 
 ## Running the tests
 
@@ -1358,3 +1362,281 @@ async def limited() -> dict[str, str]: ...
 | Extra | Ceiling 2 and route limit 2 in 10 s: a third request from one IP with one key, 1.3 s after the first, over both | `429 rate.limited`, `Retry-After` the seconds left of 60 s (the longest wait), rounded up; no handler ran for it |
 | Extra | Ceiling `0`: 301 requests from one IP; route limit 2: three requests with one key | All 301 `200`; then `200`, `200`, `429 rate.limited` |
 
+## F10: Observability
+
+The tests are in `tests/unit/platform/test_F10_log_lines.py` (F10-1 and
+F10-2, level U: PostgreSQL and Redis on closed local ports, the general
+ceiling off) and `tests/integration/platform/test_F10_observability.py`
+(F10-3 to F10-6, and the F10-2 checks of spans, outgoing calls, and
+the log line of a database error, which need the span exporter or the
+database; level I: the real PostgreSQL and Redis of
+`TEST_DATABASE_URL` and `TEST_REDIS_URL`, the database at the head
+migration). Nothing in them reaches a real network: Sentry, the
+collector, and the exporters are in-memory objects the tests pass in, or
+local sockets the tests open themselves. The names below are the tests'
+choice where the spec names none.
+
+### F10: Settings
+
+Spec 2.6 (row "Settings") and 5.1, version 3.3. All three are optional at
+start-up; the settings of the table in "Settings" above keep their rules.
+
+| Name | Required | Meaning |
+|------|----------|---------|
+| `SENTRY_DSN` | No | The Sentry DSN (a secret). Without it nothing goes to Sentry. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | The OTLP/HTTP base address of the collector (Grafana Cloud), `http://` or `https://`. Without it no trace or metric leaves the process. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | No | The headers sent with each export, as OpenTelemetry writes them: `key=value` pairs separated by `,`, values URL-encoded (a secret: Grafana Cloud's `Authorization`) |
+
+- A value that is given is checked; a malformed one stops start-up and
+  the error names the setting and never its value (the rules of
+  "Settings" above). No F10 case tests this.
+- `.env.example` lists the three with no value.
+- The release tag sent to Sentry is `RELEASE_VERSION`.
+
+### F10: Passing in-memory transports
+
+```python
+from app.main import create_app
+
+app = create_app(
+    sentry_transport=transport,   # a sentry_sdk.transport.Transport
+    span_exporter=spans,          # an opentelemetry SpanExporter, e.g. InMemorySpanExporter()
+    metric_reader=reader,         # an opentelemetry MetricReader, e.g. InMemoryMetricReader()
+)
+```
+
+- `create_app(settings=None, *, sentry_transport=None, span_exporter=None,
+  metric_reader=None)`: the three keywords are optional and default to
+  the real transports. The settings are still read from the environment
+  when `settings` is not given. (The code may also offer them through
+  `app.platform.logging.install_observability`; the tests call only
+  `create_app`.)
+- `sentry_transport`: with `SENTRY_DSN` set, every Sentry envelope goes
+  to `transport.capture_envelope(envelope)` in place of the network. The
+  tests set `SENTRY_DSN` to `http://<random key>@127.0.0.1:<closed port>/1`.
+- `span_exporter`: every finished span of the app goes to it in place of
+  the OTLP exporter, whether `OTEL_EXPORTER_OTLP_ENDPOINT` is set or not.
+- `metric_reader`: the app's metrics are read through it in place of the
+  OTLP exporter, whether `OTEL_EXPORTER_OTLP_ENDPOINT` is set or not.
+- Each call of `create_app` routes its app's signals to the objects
+  passed to that call, even when one test process builds several apps
+  (OpenTelemetry's global providers can be set only once, so the code
+  must not depend on them for this).
+- Spans and Sentry envelopes are handed over at the latest when the app's
+  lifespan has ended (`client_for` has exited): shut-down flushes them.
+  The tests read them after that.
+- Metrics are read while the app runs (inside `client_for`), with
+  `reader.get_metrics_data()` called in a worker thread
+  (`asyncio.to_thread`), so the app's event loop keeps running while the
+  values are collected. The tests read again, up to 10 s, until the value
+  they wait for is there.
+
+### F10: Log lines
+
+- Every log line of the API process is one JSON object on one line on
+  standard output (`structlog`). The tests capture it with pytest's
+  `capfd`, so it does not matter whether the logger writes to
+  `sys.stdout` or to file descriptor 1.
+- Each HTTP request writes exactly one line whose `"event"` is
+  `"request"`, once its response has been sent, with these keys:
+
+  | Key | Value |
+  |-----|-------|
+  | `event` | `"request"` |
+  | `request_id` | The request ID, equal to the response's `X-Request-Id` |
+  | `user_id` | The signed-in caller's user ID (the token's `sub`, as text), on a request whose route checked the token and passed; absent or `null` otherwise |
+  | `trip_id` | The trip ID when the route has a path parameter `trip_id` (its value as sent in the path); absent or `null` otherwise |
+  | `method` | The HTTP method |
+  | `path` | The URL path, with no query string |
+  | `status` | The response status, a number |
+  | `duration_ms` | The time to answer, a number |
+
+- No log line holds an email address, a name, a password, a token, a
+  header value of `Authorization`, or any part of the request body (spec
+  2.6). F10-2 looks for the values in all captured standard output and
+  standard error.
+- Other lines (start-up, an unexpected error) are JSON too and carry
+  `request_id` when they are written during a request.
+- A database error raised during a request (an SQLAlchemy exception that
+  wraps an asyncpg one) is answered `500 server.error` and logged without
+  any value from the database call: no bound parameter value (SQLAlchemy's
+  `[parameters: ...]`, the statement's values) and no value the database
+  quotes in its message or its `DETAIL` (for example
+  `invalid input syntax for type integer: "<value>"` or
+  `Key (email)=(<value>) already exists.`). Its error line, a JSON line
+  whose `event` is not `"request"`, keeps the request ID (`request_id`
+  equal to the response's `X-Request-Id`) and the error type: the name of
+  the exception's class (`type(error).__name__`, for example `DataError`
+  or `IntegrityError`) appears in the line. F10-2 looks for the values in
+  all captured standard output and standard error (`capfd`) and in every
+  record that reaches the root logger (`caplog`: its text, each record's
+  message, arguments, and fields, a formatted traceback included), and in every
+  span of the request (an in-memory span exporter; section "F10:
+  Traces"), which holds a `SERVER` span and a `postgresql` query span. Sentry
+  still receives the full error (F10-3); F10-2 asserts nothing about
+  Sentry here and sets no `SENTRY_DSN`.
+- The tests' route for this uses `get_session` (section "F3: Database
+  session") in a temporary module's `api.py`, catches the exception only
+  to keep `type(error).__name__` in a module list, and raises it
+  unchanged.
+
+### F10: An error after the response has started
+
+- An exception raised after the response has started (a
+  `StreamingResponse` whose generator raises after its first chunk, or a
+  `BackgroundTasks` task that raises once the response is sent) never
+  leaves the ASGI app: the app handles it itself. Under uvicorn (as
+  `python -m app.main` runs it) an exception that escapes the app is
+  logged by uvicorn as "Exception in ASGI application", with the full
+  traceback and the exception's message and with no `request_id`; the app
+  must not let that happen.
+- The error is logged as a JSON line whose `event` is not `"request"`,
+  with `request_id` equal to the response's `X-Request-Id` (sent with the
+  response's start) and the exception's class name (`ValueError`) in the
+  line. No captured output (`capfd`) and no record that reaches the root
+  logger (`caplog`: its text, each record's message, arguments, fields,
+  `exc_info` formatted as a traceback, and `exc_text`) holds a value from
+  the exception's message.
+- The error is recorded on a span of the request as an event named
+  `exception`, and no span (attributes, status description, events, their
+  `exception.message` and `exception.stacktrace` included) holds a value
+  from the exception's message.
+- How the tests observe it (their choice): they call the ASGI app itself,
+  `await app(scope, receive, send)`, inside `app.router.lifespan_context(app)`,
+  with an HTTP `scope` of ASGI spec version `2.3` and a `receive` that
+  gives an empty body and then waits for the disconnect; they assert that
+  no exception escapes that call, within 5 s. They do not start uvicorn:
+  an exception that escapes the call is exactly what uvicorn would log.
+  `httpx.ASGITransport` is not used here, because it runs no server logger.
+- The tests' module raises `ValueError(f"bad user {EMAIL} {TOKEN}")`, with a
+  random email and token written into its `api.py`; the request carries
+  neither value. No `SENTRY_DSN` is set.
+
+### F10: Error reporting
+
+- An exception a handler does not handle (answered `500 server.error`
+  by the request ID middleware of F4) is sent to Sentry as an event
+  whose `exception` holds the exception's message, whose `release` is
+  `RELEASE_VERSION`, and whose `tags` hold `request_id` equal to the
+  response's `X-Request-Id`.
+- The tests read the events with `envelope.get_event()` on each envelope
+  the transport received, and look for the one whose exception value
+  holds the random message the handler raised.
+
+### F10: Traces
+
+- The API's requests, its SQLAlchemy queries, its Redis commands, and
+  its outgoing HTTP calls are traced with OpenTelemetry (spec 2.6; 4.1).
+- One request is one trace: one span of kind `SERVER` for the request,
+  and its queries as spans of the same trace. A query span carries the
+  attribute `db.system` or `db.system.name` with the value
+  `postgresql`.
+- The `SERVER` span of a request carries `http.route`, the route's
+  template (for example `/v1/<segment>/items/{item_id}`), never the path
+  with its values: no span's `http.route` holds a path parameter's value.
+- F10-4 uses `GET /v1/health`, which reads PostgreSQL and Redis. The app
+  starts and stops without a span of its own: every span the exporter
+  holds after the one request has that request's trace ID.
+- No span holds a query string, a token or an email — not in its
+  attributes, its status description, or its events (spec 2.6, decision
+  of 3.3: no email, token, or request body). A URL in an attribute
+  (`http.url`, `url.full`, `http.target`, `url.query`, ...) is kept
+  without its query, or the query is left out. A failing query's span
+  may record the error (status `ERROR`, an `exception` event), but its
+  status description and the event's attributes (`exception.message`,
+  `exception.stacktrace`, ...) hold no bound value and no value the
+  database quotes. The tests send random values and look for them in the
+  text of every span: its name, every attribute, `status.description`,
+  each event's name and attributes, and each link's attributes.
+- OpenTelemetry's header capture setting is not followed for
+  `Authorization`: with `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST=Authorization`
+  in the environment when `create_app` is called (and
+  `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS` not set), a
+  request with `Authorization: Bearer <token>` leaves the token in no span.
+  Whether the app ignores the setting or masks the header's value is left
+  open.
+
+### F10: Outgoing HTTP calls
+
+```python
+import httpx
+
+async with client_for(app):                       # the app's lifespan runs
+    async with httpx.AsyncClient() as raw:
+        client = app.state.observability.instrument_http_client(raw)
+        await client.get("http://127.0.0.1:<port>/f10-ping?key=<random>")
+```
+
+- `app.state.observability` is set by `create_app` (it may exist before
+  the lifespan starts; the tests read it while the lifespan runs). Its
+  `instrument_http_client(client: httpx.AsyncClient) -> httpx.AsyncClient`
+  returns the client to use (it may be the same object, instrumented in
+  place). Every module that calls out over HTTP uses a client made so.
+- Each call through it makes one span of kind `CLIENT`, sent to the
+  app's span exporter (the one passed to `create_app` in the tests).
+- An outgoing URL is never logged with its query, and never put in a
+  span attribute with it: not in the app's own lines, and not in
+  `httpx`'s own `INFO` line (`HTTP Request: GET <url> ...`), which the app
+  either leaves out or writes without the query. The tests look in the
+  captured standard output and standard error (`capfd`) and in the
+  records of loggers named `httpx...` that reach the root logger
+  (`caplog`, with the levels the app set; the test does not change them).
+- The tests' local server answers `200` and writes no log line of its
+  own.
+
+### F10: Metrics
+
+Pushed with the OpenTelemetry metrics exporter to the collector of
+`OTEL_EXPORTER_OTLP_ENDPOINT`; there is no metrics route (spec 2.6; 5.1).
+
+| Metric | Kind | Unit | Attributes | Value |
+|--------|------|------|------------|-------|
+| `http.server.request.duration` | Histogram | `s` | `http.route` (the route's template, e.g. `/v1/health`), `http.request.method`, `http.response.status_code` | One data point per route, method, and status; its `count` is the number of requests (the rate) and its `sum` their time (the latency); a status of `500` is an error |
+| `tripmate.queue.depth` | Gauge (or UpDownCounter) | `{job}` | none needed | Jobs waiting in the queue: `0` until F9 adds the queue and feeds it |
+| `tripmate.job.age` | Gauge | `s` | none needed | Age of the oldest waiting job: `0` until F9 feeds it |
+| `tripmate.outbox.waiting` | Gauge (or UpDownCounter) | `{event}` | none needed | Rows of `outbox_events` whose `published_at` is null |
+
+- The tests read a metric by its name from every scope of
+  `get_metrics_data()`. For the three gauges they take the value of the
+  last data point (with no attributes, there is one).
+- F10-6 inserts two unpublished rows and one published row in
+  `outbox_events` through a connection of its own, before the app starts,
+  and waits (up to 10 s) for `tripmate.outbox.waiting` to read `2`.
+
+### F10: A collector or Sentry that does not answer
+
+- F10-5 opens two local TCP sockets that accept connections and never
+  read or answer, and sets `SENTRY_DSN` to
+  `http://<random key>@127.0.0.1:<port 1>/1` and
+  `OTEL_EXPORTER_OTLP_ENDPOINT` to `http://127.0.0.1:<port 2>`, with
+  `OTEL_EXPORTER_OTLP_HEADERS` set to a made-up `Authorization`. No
+  in-memory object is passed: the real transports are used.
+- A request to the error route answers `500 server.error`, and then
+  `GET /v1/health` answers `200`, each within 5 s.
+- To show that both were asked, each socket receives at least one
+  connection within 15 s after the app's lifespan has ended.
+- Shut-down is bounded: with both sockets silent, after those two
+  requests, the app's lifespan ends (`client_for` exits) within 15 s.
+- Shut-down does not block the event loop: while the lifespan ends, a
+  task of the test that wakes every 50 ms never waits 1 s or more between
+  two wake-ups (flushing Sentry and the exporters runs off the event loop
+  or with a bounded wait that yields).
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F10-1 | `GET /v1/platform/whoami` with a valid token (a session hook that says active), and `GET` of a `public` module route without a token | One `request` line each, `request_id` equal to `X-Request-Id`; the first with `user_id` equal to the token's `sub`, the second without a `user_id` |
+| F10-1 | `GET` of a `public` module route `/v1/<segment>/trips/{trip_id}` with a random UUID, and `GET` of a `public` module route without `trip_id` | One `request` line each; the first with `trip_id` equal to the UUID, the second without a `trip_id` |
+| F10-2 | `POST` of a `public` module route `.../sign-in` with a JSON body holding an email and a password, and `Authorization: Bearer <random token>` | One `request` line; no captured output holds the email, the password, or the token |
+| F10-2 | `GET /v1/health?token=QSECRET<random>&email=<random>@example.com`, an in-memory span exporter | `200`; a `SERVER` span; no span (attributes, status description, events) and no captured output holds the token or the email |
+| F10-2 | An outgoing `GET` through `instrument_http_client` to a local server, with `?key=SECRETKEY<random>` | `200`; a `CLIENT` span; no span (attributes, status description, events), no captured output, and no `httpx` log record holds the key |
+| F10-2 | A module route (`get_session`) whose statement `SELECT CAST(CAST(:email AS text) AS int), CAST(:token AS text)` fails with a random email and token as bound values, an in-memory span exporter | `500 server.error`; no captured output, no log record, and no span (attributes, status description, events) holds the email or the token; a `SERVER` span and a `postgresql` query span; a JSON error line carries `request_id` = `X-Request-Id` and the exception's class name |
+| F10-2 | A module route (`get_session`) that stores a random email and token in a temporary table, then fails with a unique violation on the email (a statement with no bound value; `DETAIL` quotes the email), an in-memory span exporter | The same |
+| F10-2 | A module route whose `StreamingResponse` raises `ValueError` with a random email and token after its first chunk; and one whose background task raises the same; the ASGI app called directly | The response started with `200` (and the first chunk); no exception escapes the app; no captured output and no log record (traceback included) holds the email or the token; a JSON error line carries `request_id` = `X-Request-Id` and `ValueError` |
+| F10-2 | The same two routes, an in-memory span exporter | A `SERVER` span; some span has an `exception` event; no span (attributes, status description, events) holds the email or the token |
+| F10-2 | `GET /v1/health` with `Authorization: Bearer <random token>`, `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST=Authorization`, an in-memory span exporter | `200`; a `SERVER` span; no span and no captured output holds the token |
+| F10-2, F10-6 | `GET` of a `public` module route `/v1/<segment>/items/{item_id}` with a random `item_id`, an in-memory span exporter and metric reader | `200`; the one `SERVER` span has `http.route` = the template; `http.server.request.duration` has a point for the template with status `200`; no `http.route` of a span or a point holds the random ID |
+| F10-3 | A module route that raises `RuntimeError(<random message>)`, `SENTRY_DSN` set, an in-memory transport | `500`; an event with the message, `release` = `RELEASE_VERSION`, tag `request_id` = `X-Request-Id` |
+| F10-4 | `GET /v1/health` with the real services, an in-memory span exporter | `200`; one `SERVER` span, at least one `postgresql` query span, all spans in one trace |
+| F10-5 | Sentry and the collector on local sockets that never answer | The error route `500` and the health check `200`, each within 5 s; both sockets were connected to |
+| F10-5 | The same, then the app's lifespan ends | It ends within 15 s; a 50 ms ticker never waits 1 s or more meanwhile; both sockets were connected to |
+| F10-6 | Two unpublished and one published outbox rows, `GET /v1/health` and the error route once each, an in-memory metric reader | `http.server.request.duration` has a point for `/v1/health` with status `200` and one for the error route with status `500`, each `count` ≥ 1 and `sum` > 0; `tripmate.queue.depth` and `tripmate.job.age` read `0`; `tripmate.outbox.waiting` reads `2` |
