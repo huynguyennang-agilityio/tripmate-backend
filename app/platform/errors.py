@@ -271,8 +271,17 @@ class RequestIdMiddleware:
         try:
             await self.app(scope, receive, send_with_id)
         except Exception as error:
-            if started:  # the response is on its way; nothing left to answer
-                raise
+            if started:
+                # The response is on its way (a stream or a background task failed): nothing
+                # is left to answer, and re-raising would have the server log the message and
+                # the stack with no request ID. The error already went to Sentry and to the
+                # span on its way out; log the same line as below and end the response.
+                logger.error(
+                    "Unexpected error in request",
+                    request_id=request_id,
+                    error_type=type(error).__name__,
+                )
+                return
             if isinstance(error, AppError):
                 status, body = error.status, error_body(error, request_id)
             else:
