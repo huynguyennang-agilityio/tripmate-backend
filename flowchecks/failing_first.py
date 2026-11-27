@@ -15,6 +15,10 @@ commit adds (it is absent at the parent) is run whole, as `test_command + [path]
 non-zero; its ID is its path. A file the commit only changes is not run. For such a file the run
 itself is in error (a RunError) when the command cannot start, exits 126 or 127, or prints output
 that matches the caller's `no_test_pattern` (the file holds no test), whatever the exit code.
+
+Each test commit that adds tests runs in its own fresh detached worktree. The caller's optional
+`setup_command` (F16) runs there first, once, as `bash -c`, so a test has the dependencies of its
+own commit; a setup that exits non-zero, cannot start, or times out is a RunError naming the commit.
 """
 
 from __future__ import annotations
@@ -78,8 +82,23 @@ def _tail(out: str) -> str:
     )
 
 
-def _run(command: Sequence[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[bytes]:
-    """Run `command` in its own process group; on timeout kill the whole group, then raise."""
+KILL_GRACE_SECONDS = 10.0
+
+
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
+def _run(
+    command: Sequence[str], cwd: Path, timeout: float, *, reap_group: bool = False
+) -> subprocess.CompletedProcess[bytes]:
+    """Run `command` in its own process group; on timeout kill the whole group, then raise.
+
+    The TimeoutExpired carries the output captured so far. With `reap_group` (the setup command),
+    the group is killed after the command finished too, so a background child it started does not
+    keep running into the tests; the test runs keep their behaviour.
+    """
     proc = subprocess.Popen(
         command,
         cwd=cwd,
@@ -89,11 +108,19 @@ def _run(command: Sequence[str], cwd: Path, timeout: float) -> subprocess.Comple
     )
     try:
         stdout, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
-        raise
+    except subprocess.TimeoutExpired as expired:
+        _kill_group(proc)
+        partial = expired.output or b""
+        try:
+            rest, _ = proc.communicate(timeout=KILL_GRACE_SECONDS)
+            partial += rest or b""
+        except subprocess.TimeoutExpired as again:
+            # A grandchild that left the group still holds the pipe: give up on its output.
+            partial += again.output or b""
+        expired.output = partial
+        raise expired from None
+    if reap_group:
+        _kill_group(proc)
     return subprocess.CompletedProcess(command, proc.returncode, stdout)
 
 
@@ -211,8 +238,14 @@ def check(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     test_file_pattern: str = DEFAULT_TEST_FILE_PATTERN,
     no_test_pattern: str | None = None,
+    setup_command: str | None = None,
 ) -> list[str]:
     """The IDs of the added tests that passed at their own test commit. Empty is a pass.
+
+    Each test commit that adds tests is checked out in its own fresh detached worktree, removed
+    when its tests have run (also on error). A non-empty `setup_command` runs there first, once,
+    as `bash -c <setup_command>` from the worktree's root; a setup that fails, cannot start, or
+    times out is an error of the run that names the commit, and its tests are not run.
 
     Raises RunError when a run ended in a way that is neither a pass nor a failure of the test.
     """
@@ -223,19 +256,53 @@ def check(
         return []
     passing: list[str] = []
     problems: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="flowchecks-") as scratch:
-        tree = Path(scratch) / "checkout"
-        _git.git(repo, "worktree", "add", "--detach", "--force", str(tree), plan[0][0])
-        try:
-            for sha, ids in plan:
-                _git.git(tree, "checkout", "-q", "--force", "--detach", sha)
+    for sha, ids in plan:
+        with tempfile.TemporaryDirectory(prefix="flowchecks-") as scratch:
+            tree = Path(scratch) / "checkout"
+            _git.git(repo, "worktree", "add", "--detach", "--force", str(tree), sha)
+            try:
+                if setup_command and not _run_setup(tree, setup_command, sha, timeout, problems):
+                    continue
                 for test in ids:
                     _run_one(tree, test_command, test, timeout, passing, problems, no_test)
-        finally:
-            _git.git(repo, "worktree", "remove", "--force", str(tree))
+            finally:
+                try:
+                    _git.git(repo, "worktree", "remove", "--force", str(tree))
+                except _git.GitError as error:
+                    problems.append(f"commit {sha}: the worktree could not be removed: {error}")
+    try:
+        _git.git(repo, "worktree", "prune")
+    except _git.GitError as error:
+        problems.append(f"git worktree prune failed: {error}")
     if problems:
         raise RunError("\n".join(problems))
     return passing
+
+
+def _run_setup(
+    tree: Path, setup_command: str, sha: str, timeout: float, problems: list[str]
+) -> bool:
+    """Run the caller's setup in `tree`; True when it succeeded, else record the error."""
+    print(f"  commit {sha[:7]}: running the setup command", file=sys.stderr)
+    try:
+        result = _run(["bash", "-c", setup_command], tree, timeout, reap_group=True)
+    except subprocess.TimeoutExpired as expired:
+        partial = (expired.output or b"").decode("utf-8", "replace")
+        problems.append(
+            f"commit {sha}: the setup command timed out after {timeout:.0f} seconds"
+            + (f":\n{_tail(partial)}" if partial else "")
+        )
+        return False
+    except OSError as error:
+        problems.append(f"commit {sha}: the setup command cannot start: {error}")
+        return False
+    if result.returncode != 0:
+        out = result.stdout.decode("utf-8", "replace")
+        problems.append(
+            f"commit {sha}: the setup command ended with exit {result.returncode}:\n{_tail(out)}"
+        )
+        return False
+    return True
 
 
 def _run_one(
@@ -322,6 +389,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--no-test-pattern", default="", help="regex; output that matches is an error of the run"
     )
+    parser.add_argument(
+        "--setup-command",
+        default="",
+        help="run as `bash -c` once in each test commit's worktree before its tests; empty is none",
+    )
     args = parser.parse_args(argv)
     try:
         passing = check(
@@ -332,6 +404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout=args.timeout,
             test_file_pattern=args.test_file_pattern or DEFAULT_TEST_FILE_PATTERN,
             no_test_pattern=args.no_test_pattern or None,
+            setup_command=args.setup_command or None,
         )
     except PatternError as error:
         print(f"Failing first: {error}", file=sys.stderr)
