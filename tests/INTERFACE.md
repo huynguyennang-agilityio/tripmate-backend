@@ -31,6 +31,10 @@ What the tests need from the code, and nothing more, card by card:
   2.2 (rows "Device ID", "Access declaration", "Token check") and 2.3,
   security.md, section 2 (row "Access token"), and api-design.md,
   sections 2 and 4.2 (cases F5-1 to F5-10), in the section "F5: Access".
+- F6 Rate limits: from the EPIC-11 spec, version 2.8, sections 2.2 (row
+  "Rate limits" and the order of the steps), 2.3, and the four F6
+  decisions in 5.1, security.md, section 2.2, and api-design.md,
+  section 4.2 (cases F6-1 to F6-6), in the section "F6: Rate limits".
 
 ## Running the tests
 
@@ -1118,3 +1122,120 @@ Each error body is exactly `{"error": {"code", "params", "fields",
 
 - F1-7's probe route (section "Modules found by scanning") declares no
   access; its requests carry a valid `X-Device-Id` from F5 on.
+
+## F6: Rate limits
+
+The tests are in `tests/api/platform/test_F6_rate_limits.py` (F6-1 to F6-5,
+level A) and `tests/integration/platform/test_F6_rate_limits_unavailable.py`
+(F6-6, level I), with their helpers in `tests/api/platform/f6_support.py`.
+As in F5, a temporary module under `app/` (the `module_folder` fixture)
+serves the routes and registers a session hook that says every session is
+active; the app is called in process (`client_for(build_app())`). F6-1 to
+F6-5 use the real Redis (`TEST_REDIS_URL`) and PostgreSQL on a closed port;
+F6-6 uses the real PostgreSQL and Redis on a closed port.
+
+### F6: The general ceiling
+
+- The setting `RATE_LIMIT_PER_MINUTE` (spec 2.2, row "Rate limits"; 5.1):
+  an integer, the requests a minute; `300` when it is not given. It is
+  optional for the app to start. The tests set small values (2 to 4) to
+  reach the ceiling; F6-3 leaves it out.
+- `RATE_LIMIT_PER_MINUTE=0` turns the general ceiling off; a route's own
+  limit still applies (spec 2.2; 5.1, version 2.8). Production never sets
+  `0`. `test_F6_extra_ceiling_0_turns_the_general_ceiling_off_but_not_a_routes_own_limit`
+  sends 301 requests (one over the default of 300) from one IP address,
+  which all pass, and then reaches a route's own limit of 2, which answers
+  `429 rate.limited`.
+- The tests of earlier cards that call a route other than the health check
+  set `RATE_LIMIT_PER_MINUTE="0"` with their other settings, so they pass
+  with Redis on a closed port (or, on the real Redis, without sharing the
+  counter of the in-process client's address `127.0.0.1`). Each such test
+  is otherwise unchanged.
+- It applies to every route except the health check, with no declaration
+  in the route. Its window is 60 seconds.
+- It is counted for the IP address and, on a route that is not `public`,
+  also for the user (the token's `sub`); either count over the ceiling
+  stops the request (spec 2.2; 5.1).
+- The IP address is the last entry of `X-Forwarded-For` (entries split on
+  `,`, spaces around them ignored), or the connection's address when the
+  header is missing (spec 2.2; 5.1). Every test request carries its own
+  made-up address from `10.0.0.0/8` as that last entry, so no two tests
+  share a counter; F6-4 puts other addresses before it, which do not count.
+- Rate limits come after the device ID and the token check (spec 2.2, order
+  of the steps); every request of the tests carries a valid UUID
+  `X-Device-Id` (F5).
+
+### F6: A route's own limit
+
+A route adds its own limit with a FastAPI dependency from
+`app.platform.rate_limits` (spec 2.2: "A route can add its own limit with
+its key"; the names are the tests' choice, as the spec names none):
+
+```python
+from fastapi import APIRouter, Depends, Request
+
+from app.platform.access import public
+from app.platform.rate_limits import rate_limit
+
+router = APIRouter()
+
+
+def by_probe_key(request: Request) -> str:
+    return "<module name>:" + request.headers.get("X-Probe-Key", "none")
+
+
+@router.get(
+    "/limited",
+    dependencies=[
+        Depends(public),
+        Depends(rate_limit(limit=2, window_seconds=10, key=by_probe_key)),
+    ],
+)
+async def limited() -> dict[str, str]: ...
+```
+
+- `rate_limit(*, limit: int, window_seconds: int, key)` returns a
+  dependency. `key` is a plain function that takes the `Request` and
+  returns a string; requests with the same string share one counter of
+  `limit` requests per `window_seconds`. The tests start each key with
+  the module's unique name. Whether two declarations that return the same
+  string share a counter is not tested.
+- `rate_limit` is not an access declaration: the route still declares
+  `public`, `signed_in`, or a capability (F5).
+- The route's limit applies as well as the general ceiling (F6-5): either
+  one over its limit stops the request.
+
+### F6: Counting
+
+- Counters live in Redis (`REDIS_URL`), one per key, in a fixed window that
+  starts at the window's first request and lasts the window's length
+  (spec 2.2; 5.1).
+- Over a limit: `429 rate.limited` in the error format of F4 (api-design.md,
+  section 4.2), with the header `Retry-After` set to the whole seconds left
+  in the window, rounded up (spec 2.2; 5.1). The handler does not run.
+  The tests accept any value between the seconds left rounded up as
+  measured from the earliest and the latest moments the first request and
+  the request over the limit could have been served. F6-2 puts each
+  request over exactly one limit: the requests to the route with its own
+  limit each come from a new IP address, so they stay under the ceiling.
+- A request over more than one limit (the ceiling and a route's own limit)
+  gets the longest of their waits in `Retry-After` (spec 2.2; 5.1, version
+  2.8). `test_F6_extra_over_two_limits_gets_the_longest_wait` sends a third
+  request from one IP address with one key, over a ceiling of 2 a minute and
+  a route limit of 2 in 10 s, and accepts only the ceiling's seconds left.
+- Whether a request that was stopped is counted is not tested.
+- Redis does not answer (F6-6, a closed local port): every rate-limited
+  route, so any route but the health check, returns `503
+  server.unavailable` (spec 2.3; 5.1), and the handler does not run.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F6-1 | Ceiling 3: three requests from one IP; route limit 2: two requests with one key | All `200`; every handler ran |
+| F6-2 | Ceiling 2: a third request 1.3 s after the first; route limit 2 in 10 s: a third request 1.3 s after the first, each request from a new IP (under the ceiling) | `429 rate.limited`, `Retry-After` the seconds left of 60 s and of 10 s, rounded up; no handler ran for them |
+| F6-3 | Route limit 2 in 2 s: a third request is `429`; then a request once 2 s have passed since the first | The last one `200` |
+| F6-4 | Ceiling 2: IP A three times (other entries before it), then IP B twice; on the `signed_in` route, user 1 from three new IPs, then user 2 from the third IP and from a new one | A: `200`, `200`, `429`; B: `200`, `200`; user 1: `200`, `200`, `429`; user 2: `200`, `200` |
+| F6-5 | Ceiling 4, route limit 2: key `a` three times and key `b` once from one IP; five new keys from another IP | `200`, `200`, `429`, `200`; then four `200` and a `429` |
+| F6-6 | Redis on a closed port: a `public` route, a `signed_in` route with a valid token, the route with its own limit | `503 server.unavailable`, all three; no handler ran |
+| Extra | Ceiling 2 and route limit 2 in 10 s: a third request from one IP with one key, 1.3 s after the first, over both | `429 rate.limited`, `Retry-After` the seconds left of 60 s (the longest wait), rounded up; no handler ran for it |
+| Extra | Ceiling `0`: 301 requests from one IP; route limit 2: three requests with one key | All 301 `200`; then `200`, `200`, `429 rate.limited` |
+

@@ -49,6 +49,8 @@ HEALTH_PATH = "/v1/health"
 ALGORITHM = "EdDSA"
 REQUIRED_CLAIMS = ["sub", "sid", "iat", "exp"]
 
+# Private to the platform: only `signed_in` sets it, so no other code can plant a caller.
+_CALLER_KEY = "_tripmate_platform_caller"
 _ACCESS_DEPENDENCIES: set[Callable[..., Any]] = set()
 
 
@@ -163,9 +165,18 @@ def _claims(token: str, keys: tuple[Ed25519PublicKey, ...]) -> dict[str, Any]:
     raise AppError(401, NOT_SIGNED_IN)
 
 
+def checked_caller(request: Request) -> Caller | None:
+    """The caller `signed_in` has already checked in this request, or `None` (for a rate limit key)."""
+    cached = request.scope.get("state", {}).get(_CALLER_KEY)
+    return cached if isinstance(cached, Caller) else None
+
+
 @declares_access
 async def signed_in(request: Request) -> Caller:
     """Declares a route for a signed-in user, checks the token and session, returns the caller."""
+    cached = checked_caller(request)
+    if cached is not None:  # the general ceiling already checked this request
+        return cached
     token = _bearer_token(request)
     claims = _claims(token, request.app.state.access_keys)
     try:
@@ -177,6 +188,7 @@ async def signed_in(request: Request) -> Caller:
         raise AppError(401, NOT_SIGNED_IN)
     if not await hook(caller.session_id):
         raise AppError(401, TOKEN_EXPIRED)
+    request.scope.setdefault("state", {})[_CALLER_KEY] = caller
     return caller
 
 
@@ -189,6 +201,12 @@ def _uses(dependant: Dependant, declarations: set[Callable[..., Any]]) -> bool:
         dependency.call in declarations or _uses(dependency, declarations)
         for dependency in dependant.dependencies
     )
+
+
+def route_needs_signed_in(request: Request) -> bool:
+    """Whether the route being served declares `signed_in` (so it is not `public`)."""
+    route = request.scope.get("route")
+    return isinstance(route, APIRoute) and _uses(route.dependant, _SIGNED_IN_DEPENDENCIES)
 
 
 def _declares(dependant: Dependant) -> bool:

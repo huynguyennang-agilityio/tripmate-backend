@@ -37,7 +37,7 @@ def _headers(key: Ed25519PrivateKey, **claims: object) -> dict[str, str]:
 async def test_F5_whoami_answers_the_caller_and_each_error_of_2_3(
     set_settings, monkeypatch, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     key = Ed25519PrivateKey.generate()
     pem = key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo

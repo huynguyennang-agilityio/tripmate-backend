@@ -92,7 +92,7 @@ def _headers() -> dict[str, str]:
 async def test_F3_1_handler_that_writes_a_row_and_returns_stores_the_row(
     set_settings, module_folder, probe_table
 ) -> None:
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     path = _probe_module(module_folder, probe_table)
     marker = f"f3-1-{uuid.uuid4().hex[:8]}"
 
@@ -109,7 +109,7 @@ async def test_F3_1_handler_that_writes_a_row_and_returns_stores_the_row(
 async def test_F3_2_handler_that_writes_a_row_then_raises_stores_no_row(
     set_settings, module_folder, probe_table
 ) -> None:
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     path = _probe_module(module_folder, probe_table)
     marker = f"f3-2-{uuid.uuid4().hex[:8]}"
 
@@ -230,7 +230,7 @@ async def _post_with_control(path: str, route: str, marker: str) -> httpx.Respon
 async def test_F3_2_handler_that_writes_then_raises_an_app_error_stores_no_row_and_answers_409(
     set_settings, module_folder, deferred_unique_table
 ) -> None:
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     path = _review_probe_module(module_folder, deferred_unique_table)
     marker = f"f3-2-app-error-{uuid.uuid4().hex[:8]}"
 
@@ -246,7 +246,7 @@ async def test_F3_1_handler_whose_commit_fails_is_not_answered_with_success_and_
 ) -> None:
     # The commit happens before the response: a response must not claim a change that
     # was never stored.
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     path = _review_probe_module(module_folder, deferred_unique_table)
     marker = f"f3-1-commit-fails-{uuid.uuid4().hex[:8]}"
 
@@ -262,7 +262,7 @@ async def test_F3_1_handler_that_commits_itself_then_writes_and_returns_stores_n
 ) -> None:
     # One transaction per request: the handler never commits, so its own commit does not
     # store the first row, and the request is not answered with success.
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     path = _review_probe_module(module_folder, deferred_unique_table)
     marker = f"f3-1-self-commit-{uuid.uuid4().hex[:8]}"
 
@@ -276,7 +276,7 @@ async def test_F3_1_handler_that_commits_itself_then_writes_and_returns_stores_n
 async def test_F3_2_handler_that_commits_itself_then_writes_and_raises_stores_nothing(
     set_settings, module_folder, deferred_unique_table
 ) -> None:
-    set_settings(DATABASE_URL=real_database_url())
+    set_settings(DATABASE_URL=real_database_url(), RATE_LIMIT_PER_MINUTE="0")
     path = _review_probe_module(module_folder, deferred_unique_table)
     marker = f"f3-2-self-commit-{uuid.uuid4().hex[:8]}"
 

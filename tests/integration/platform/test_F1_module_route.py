@@ -53,7 +53,7 @@ def _repository_files(skip: Path | None = None) -> dict[str, str]:
 async def test_F1_7_new_module_folder_with_api_py_gets_its_route_served(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     before = _repository_files()
     assert before, "no files found to compare"
     app_without_folder = build_app()

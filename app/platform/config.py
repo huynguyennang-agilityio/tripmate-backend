@@ -35,9 +35,11 @@ SETTING_NAMES = {
     "RELEASE_VERSION": "release_version",
     "PORT": "port",
     "ACCESS_TOKEN_PUBLIC_KEYS": "access_token_public_keys",
+    "RATE_LIMIT_PER_MINUTE": "rate_limit_per_minute",
 }
 
 DEFAULT_PORT = 8000
+DEFAULT_RATE_LIMIT_PER_MINUTE = 300
 
 # The SSL modes asyncpg takes in its `ssl` parameter, named as libpq's `sslmode`.
 SSL_MODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
@@ -125,6 +127,8 @@ class Settings(BaseModel):
     # Public keys, not secrets. Optional: without one, every route that is not public
     # answers `401 auth.not_signed_in` (EPIC-11 spec, section 2.2).
     access_token_public_keys: tuple[str, ...] = ()
+    # The general ceiling: requests a minute for an IP address and a user. 0 turns it off.
+    rate_limit_per_minute: Annotated[int, Field(ge=0)] = DEFAULT_RATE_LIMIT_PER_MINUTE
 
     @field_validator("access_token_public_keys", mode="before")
     @classmethod

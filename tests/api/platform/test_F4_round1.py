@@ -81,7 +81,7 @@ def _error_of(response) -> dict:
 async def test_F4_r1_app_error_from_a_middleware_keeps_status_and_body(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     base = _probe(module_folder)
     app = build_app()
     app.user_middleware.append(Middleware(RaisingMiddleware))  # the innermost user middleware
@@ -99,7 +99,7 @@ async def test_F4_r1_app_error_from_a_middleware_keeps_status_and_body(
 async def test_F4_r1_unknown_route_and_wrong_method_use_the_error_format(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     base = _probe(module_folder)
 
     async with client_for(build_app()) as client:
@@ -117,7 +117,7 @@ async def test_F4_r1_unknown_route_and_wrong_method_use_the_error_format(
 async def test_F4_r1_other_http_exceptions_are_unexpected_500_server_error(
     set_settings, module_folder
 ) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     base = _probe(module_folder)
 
     async with client_for(build_app()) as client:
@@ -137,7 +137,7 @@ async def test_F4_r1_other_http_exceptions_are_unexpected_500_server_error(
 
 
 def test_F4_r1_openapi_documents_400_error_response_not_422(set_settings, module_folder) -> None:
-    set_settings()
+    set_settings(RATE_LIMIT_PER_MINUTE="0")
     _probe(module_folder)
     schema = build_app().openapi()
 
