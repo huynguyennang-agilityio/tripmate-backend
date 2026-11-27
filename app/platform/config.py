@@ -10,7 +10,7 @@ import os
 import re
 import sys
 from typing import Annotated, Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -25,6 +25,7 @@ from pydantic import (
     field_validator,
 )
 from redis import ConnectionPool
+from sentry_sdk.utils import BadDsn, Dsn
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
@@ -36,6 +37,9 @@ SETTING_NAMES = {
     "PORT": "port",
     "ACCESS_TOKEN_PUBLIC_KEYS": "access_token_public_keys",
     "RATE_LIMIT_PER_MINUTE": "rate_limit_per_minute",
+    "SENTRY_DSN": "sentry_dsn",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "otel_exporter_otlp_endpoint",
+    "OTEL_EXPORTER_OTLP_HEADERS": "otel_exporter_otlp_headers",
 }
 
 DEFAULT_PORT = 8000
@@ -94,6 +98,48 @@ def _checked_redis_url(secret: SecretStr) -> SecretStr:
     return secret
 
 
+def _checked_sentry_dsn(secret: SecretStr) -> SecretStr:
+    try:
+        Dsn(secret.get_secret_value())
+    except (BadDsn, ValueError):
+        raise ValueError("not a valid Sentry DSN") from None
+    return secret
+
+
+def _checked_otlp_endpoint(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+        port = parts.port  # raises ValueError for a port that is not a number
+    except ValueError:
+        raise ValueError("not a valid address") from None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("must be an http:// or https:// address")
+    if port is not None and port == 0:
+        raise ValueError("not a valid address")
+    if parts.query or parts.fragment:
+        raise ValueError("takes no query or fragment")
+    return value
+
+
+def parse_otlp_headers(value: str) -> dict[str, str]:
+    """`key=value` pairs separated by `,`, values URL-encoded (the OpenTelemetry format).
+
+    Raises ValueError with fixed text: the message never quotes the value.
+    """
+    headers: dict[str, str] = {}
+    for pair in value.split(","):
+        if not pair.strip():
+            continue
+        key, separator, raw = pair.partition("=")
+        key = key.strip()
+        if not separator or not key or not key.isascii() or not key.isprintable() or " " in key:
+            raise ValueError("must be key=value pairs separated by commas")
+        headers[key] = unquote(raw.strip())
+    if not headers:
+        raise ValueError("must be key=value pairs separated by commas")
+    return headers
+
+
 _PEM_BLOCK = re.compile(r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----", re.DOTALL)
 
 
@@ -129,6 +175,12 @@ class Settings(BaseModel):
     access_token_public_keys: tuple[str, ...] = ()
     # The general ceiling: requests a minute for an IP address and a user. 0 turns it off.
     rate_limit_per_minute: Annotated[int, Field(ge=0)] = DEFAULT_RATE_LIMIT_PER_MINUTE
+    # Error reporting and telemetry (EPIC-11 spec, section 2.6). All three are optional: without
+    # `sentry_dsn` nothing goes to Sentry; without the endpoint no trace or metric leaves the
+    # process. A DSN and the headers are secrets, so `SecretStr` keeps them out of `repr()`.
+    sentry_dsn: SecretStr | None = None
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_exporter_otlp_headers: SecretStr | None = None
 
     @field_validator("access_token_public_keys", mode="before")
     @classmethod
@@ -139,6 +191,23 @@ class Settings(BaseModel):
     @classmethod
     def _postgresql_with_asyncpg(cls, secret: SecretStr) -> SecretStr:
         return _checked_database_url(secret)
+
+    @field_validator("sentry_dsn")
+    @classmethod
+    def _sentry_dsn(cls, secret: SecretStr | None) -> SecretStr | None:
+        return None if secret is None else _checked_sentry_dsn(secret)
+
+    @field_validator("otel_exporter_otlp_endpoint")
+    @classmethod
+    def _otlp_endpoint(cls, value: str | None) -> str | None:
+        return None if value is None else _checked_otlp_endpoint(value)
+
+    @field_validator("otel_exporter_otlp_headers")
+    @classmethod
+    def _otlp_headers(cls, secret: SecretStr | None) -> SecretStr | None:
+        if secret is not None:
+            parse_otlp_headers(secret.get_secret_value())
+        return secret
 
     @field_validator("redis_url")
     @classmethod

@@ -94,7 +94,7 @@ The backend is a modular monolith ([architecture.md, section 4](https://github.c
 | Idempotency keys | `idempotency.py` | Interface only, card F7 |
 | Outbox | `outbox.py` | Interface only, card F8 |
 | Jobs, worker, scheduler, cleanup | `jobs.py`, `process.py` | Interface only, card F9 |
-| Logs, traces, metrics, error reporting | `logging.py` | Interface only, card F10 |
+| Logs, traces, metrics, error reporting | `logging.py` | Built (F10) |
 
 Events (planned, F8): a change and its outbox rows commit in one transaction; the worker
 reads the outbox in order and publishes each event to the trip's Redis channel, so a client
@@ -116,8 +116,9 @@ tripmate-backend/
 │       ├── health.py         GET /v1/health
 │       ├── redis_client.py   Redis connection
 │       ├── process.py        Signal handling shared by worker and scheduler
+│       ├── logging.py        JSON request lines, OpenTelemetry, Sentry (F10)
 │       └── errors.py, access.py, rate_limits.py, idempotency.py, outbox.py,
-│           jobs.py, logging.py    Interfaces that cards F4 to F10 fill
+│           jobs.py           Interfaces that cards F4 to F9 fill
 ├── migrations/               Alembic environment and versions/ (0001_initial)
 ├── flowchecks/               The four flow checks (failing_first, test_lock, mutation, risk_gate) and the requirements report
 ├── tests/
@@ -170,7 +171,7 @@ asks for (blank means any version, pinned by the lock file).
 | structlog | 26.1.0 | -- |
 | OpenTelemetry API and SDK | 1.45.2 | -- |
 | OpenTelemetry OTLP HTTP exporter | 1.45.2 | -- |
-| OpenTelemetry instrumentation (fastapi, sqlalchemy, redis) | 0.66b2 | -- |
+| OpenTelemetry instrumentation (fastapi, sqlalchemy, redis, httpx) | 0.66b2 | -- |
 | sentry-sdk | 3.0.0 | `>=3,<4` |
 | PyJWT (`crypto` extra) | 2.15.1 | -- |
 | argon2-cffi | 25.1.0 | -- |
