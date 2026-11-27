@@ -85,12 +85,12 @@ async def enforce(redis: Any, counts: list[tuple[str, int, int]]) -> None:
     """Count each `(key, limit, window_seconds)`; raise `429` when any is over its limit.
 
     Every key is counted, so a request over one limit still counts for the others. When more
-    than one limit is over, `Retry-After` is the shortest wait (the first limit to let go).
+    than one limit is over, `Retry-After` is the longest wait (when every limit has let go).
     """
     waits = [await seconds_to_wait(redis, key, limit, window) for key, limit, window in counts]
     over = [wait for wait in waits if wait is not None]
     if over:
-        raise _limited(min(over))
+        raise _limited(max(over))
 
 
 @dataclass(frozen=True)
@@ -134,7 +134,7 @@ async def general_ceiling(request: Request) -> None:
     """The general ceiling: a dependency of every route (see `install_rate_limits`).
 
     It also counts the route's own limits in the same step, so that a request over both is
-    answered once, with the shortest wait; the route's own check then finds it counted.
+    answered once, with the longest wait; the route's own check then finds it counted.
     """
     ceiling: int = request.app.state.settings.rate_limit_per_minute
     if ceiling == 0 or request.url.path == HEALTH_PATH:

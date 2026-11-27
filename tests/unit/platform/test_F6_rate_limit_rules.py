@@ -145,7 +145,7 @@ async def test_F6_redis_failing_is_503_server_unavailable() -> None:
         assert _status(raised.value) == (503, "server.unavailable", None)
 
 
-async def test_F6_every_key_is_counted_and_the_shortest_wait_is_sent() -> None:
+async def test_F6_every_key_is_counted_and_the_longest_wait_is_sent() -> None:
     redis = FakeRedis(left_ms=5_000)
     redis.counts = {"rate:a": 9, "rate:b": 9}
     with pytest.raises(AppError) as raised:
@@ -155,17 +155,17 @@ async def test_F6_every_key_is_counted_and_the_shortest_wait_is_sent() -> None:
     assert redis.counts == {"rate:a": 10, "rate:b": 10, "rate:c": 1}
 
 
-async def test_F6_the_shortest_of_two_waits_is_the_retry_after() -> None:
+async def test_F6_the_longest_of_two_waits_is_the_retry_after() -> None:
     class Waits(FakeRedis):
         async def eval(self, script: str, numkeys: int, key: str, window_ms: int) -> list[int]:
             return [5, 59_000 if key.endswith("long") else 9_000]
 
     with pytest.raises(AppError) as raised:
         await enforce(Waits(), [("long", 1, 60), ("short", 1, 10)])
-    assert raised.value.headers == {"Retry-After": "9"}
+    assert raised.value.headers == {"Retry-After": "59"}
     with pytest.raises(AppError) as raised:
         await enforce(Waits(), [("short", 1, 10), ("long", 1, 60)])
-    assert raised.value.headers == {"Retry-After": "9"}
+    assert raised.value.headers == {"Retry-After": "59"}
 
 
 async def test_F6_enforce_passes_when_no_key_is_over() -> None:
