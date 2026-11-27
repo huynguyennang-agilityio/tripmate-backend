@@ -657,3 +657,37 @@ async def test_F7_extra_429_raised_by_the_handler_is_stored_and_replayed_without
     assert len(rows) == 1, rows
     assert rows[0]["status"] == 429, rows
     assert as_json(rows[0]["response_body"]) == first.json(), rows
+
+
+# -- Decision of the product owner after diff review round 1 (R1-2) ------------------------
+
+
+async def test_F7_extra_429_raised_by_the_handler_is_replayed_with_its_retry_after(
+    services, module_folder, probe_table
+) -> None:
+    # The stored headers are Location, ETag, Content-Type, and Retry-After (spec 3.3, 2.4).
+    services()
+    probe = write_probe(module_folder, probe_table)
+    device, key = new_device(), new_key()
+
+    async with _client(build_app()) as client:
+        first = await client.post(
+            probe.path("handler-limited"), json=BODY, headers=headers(device, key)
+        )
+        replay = await client.post(
+            probe.path("handler-limited"), json=BODY, headers=headers(device, key)
+        )
+
+    assert_error(first, 429, "rate.limited", "the handler raises 429")
+    assert_not_replayed(first, "the handler raises 429")
+    retry_after = first.headers.get("Retry-After")
+    assert retry_after, "the handler's 429 has no Retry-After"
+    assert_replay_of(replay, first, "the same key and body after the handler's 429")
+    assert replay.headers.get("Retry-After") == retry_after, (
+        f"Retry-After: {replay.headers.get('Retry-After')!r} is not {retry_after!r}"
+    )
+    assert probe.calls() == ["handler-limited"], "the handler ran again"
+    rows = await key_rows(key)
+    assert len(rows) == 1, rows
+    stored = {name.lower(): value for name, value in as_json(rows[0]["response_headers"]).items()}
+    assert stored.get("retry-after") == retry_after, stored

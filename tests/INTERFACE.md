@@ -1524,5 +1524,6 @@ with the columns of data-model.md, section 6.3: `key`, `user_id`,
 | Extra | A replay (I) | Same `Location`, `ETag`, `Content-Type`; `Idempotent-Replayed: true`; no `X-Probe-Extra`; stored headers hold `location` and `etag`, not `x-probe-extra` |
 | Extra | `400` schema, `401`, `429`, `503` before the handler (I) | No row for the key; the retry with the same key runs |
 | Extra | `401` and `429` raised by the handler after it writes (I) | Stored with no record; the same status and body byte for byte with `Idempotent-Replayed: true`; the handler ran once |
+| Extra | `429` raised by the handler, replayed (I) | The replay has the first `Retry-After` and `Idempotent-Replayed: true`; stored headers hold `retry-after` (R1-2: `Location`, `ETag`, `Content-Type`, `Retry-After` are stored) |
 | Extra | The same key and body on another path, and with `PUT` (A) | `409 request.idempotency_mismatch`, both |
 | Extra | The contract (C) | The header, `400`, and `409` on the declaring operations only; the three codes in `PLATFORM_ERROR_CODES` |
