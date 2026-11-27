@@ -27,13 +27,15 @@ from app.platform import access
 from app.platform.access import (
     Caller,
     declares_access,
+    install_access_contract,
+    install_access_keys,
     install_device_id,
     public,
     signed_in,
     undeclared_routes,
 )
 from app.platform.config import load_settings
-from app.platform.errors import install_error_handlers, install_request_id
+from app.platform.errors import install_error_handlers, install_openapi, install_request_id
 from app.platform.modules import Registry
 
 DEVICE = str(uuid.uuid4())
@@ -88,6 +90,9 @@ def _app(
     async def me(caller: Annotated[Caller, Depends(signed_in)]) -> dict[str, str]:
         return {"userId": str(caller.user_id), "sessionId": str(caller.session_id)}
 
+    install_openapi(app)
+    install_access_contract(app)
+    install_access_keys(app, app.state.settings.access_token_public_keys)
     install_device_id(app)
     install_request_id(app)
     return app
@@ -162,12 +167,32 @@ async def test_F5_device_id_missing_or_invalid_is_400_with_its_field_and_code() 
 
 
 @pytest.mark.asyncio
-async def test_F5_only_get_health_is_exempt_from_the_device_id() -> None:
+async def test_F5_the_health_path_is_exempt_from_the_device_id_for_every_method() -> None:
     app = _app(Ed25519PrivateKey.generate())
     assert (await _get(app, "/v1/health", {})).status_code == 200
-    assert (await _get(app, "/v1/health", {}, "POST")).status_code == 400
-    assert (await _get(app, "/v1/health/x", {})).status_code == 400
+    assert (await _get(app, "/v1/health", {}, "POST")).status_code == 200
     assert (await _get(app, "/v1/health", {"X-Device-Id": "bad"})).status_code == 200
+    # A method the route does not serve gets the routing answer, not a 400 (R1-3).
+    for method in ("TRACE", "DELETE", "PUT"):
+        response = await _get(app, "/v1/health", {}, method)
+        assert response.status_code == 405, method
+        assert response.json()["error"]["code"] == "request.method_not_allowed"
+    # Only that exact path: a longer one is another route.
+    assert (await _get(app, "/v1/health/x", {})).status_code == 400
+    assert (await _get(app, "/v1/healthz", {})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_F5_a_cors_preflight_needs_no_device_id() -> None:
+    app = _app(Ed25519PrivateKey.generate())
+    preflight = {"Access-Control-Request-Method": "GET", "Origin": "https://app.example"}
+    # With the preflight header the check is skipped: routing answers (no OPTIONS route: 405).
+    assert (await _get(app, "/v1/me", preflight, "OPTIONS")).status_code == 405
+    # An OPTIONS request without it is an ordinary request.
+    plain = await _get(app, "/v1/me", {"Origin": "https://app.example"}, "OPTIONS")
+    assert plain.status_code == 400
+    # The header on another method does not skip the check.
+    assert (await _get(app, "/v1/me", preflight, "GET")).status_code == 400
 
 
 @pytest.mark.asyncio
