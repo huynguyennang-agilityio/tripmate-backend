@@ -81,8 +81,10 @@ testpaths = ["tests"]
 [tool.mutmut]
 source_paths = ["app"]
 pytest_add_cli_args_test_selection = ["tests/unit"]
-# The tests of the flow checks build git repositories and test no rule file.
-pytest_add_cli_args = ["--ignore=tests/unit/flow"]
+# The tests of the flow checks build git repositories and test no rule file. The tests of the
+# Claude Code hooks run `.claude/hooks/`, which mutmut does not copy into `mutants/`, and test no
+# rule file either.
+pytest_add_cli_args = ["--ignore=tests/unit/flow", "--ignore=tests/unit/hooks"]
 
 [tool.importlinter]
 root_packages = ["app", "flowchecks"]
