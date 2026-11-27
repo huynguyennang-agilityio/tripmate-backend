@@ -39,6 +39,10 @@ What the tests need from the code, and nothing more, card by card:
   "Rate limits" and the order of the steps), 2.3, and the four F6
   decisions in 5.1, security.md, section 2.2, and api-design.md,
   section 4.2 (cases F6-1 to F6-6), in the section "F6: Rate limits".
+- F7 Idempotency keys: from the EPIC-11 spec, version 3.3, sections 2.4
+  and 4.2 and the four F7 decisions in 5.1, data-model.md, section 6.3
+  (version 1.8), and api-design.md, section 2, row "Idempotency" (cases
+  F7-1 to F7-10), in the section "F7: Idempotency keys".
 
 ## Running the tests
 
@@ -1272,3 +1276,159 @@ async def limited() -> dict[str, str]: ...
 | Extra | Ceiling 2 and route limit 2 in 10 s: a third request from one IP with one key, 1.3 s after the first, over both | `429 rate.limited`, `Retry-After` the seconds left of 60 s (the longest wait), rounded up; no handler ran for it |
 | Extra | Ceiling `0`: 301 requests from one IP; route limit 2: three requests with one key | All 301 `200`; then `200`, `200`, `429 rate.limited` |
 
+## F7: Idempotency keys
+
+The tests are in `tests/integration/platform/test_F7_idempotency_store.py`
+(F7-1, F7-2, F7-4, F7-5, F7-6, F7-9, F7-10, level I, and the extras that
+need the database), `tests/api/platform/test_F7_idempotency_keys.py`
+(F7-1, F7-2, F7-3, F7-7, F7-8, level A, and the extra on another method
+or path), and `tests/contract/platform/test_F7_idempotency_contract.py`
+(the contract entries and the error codes), with their helpers in
+`tests/integration/platform/f7_support.py`. As in F5 and F6, a temporary
+module under `app/` (the `module_folder` fixture) serves the probe
+routes and registers a session hook that says every session is active;
+the app is called in process (`client_for(build_app())`) on the real
+PostgreSQL and Redis, with `RATE_LIMIT_PER_MINUTE=0`. The integration
+and api test files bring the database to the head migration once per
+file, as in F8.
+
+### F7: Declaring it
+
+`app/platform/idempotency.py` holds the idempotency keys (spec, section
+2.1, `platform` part `idempotency`). A route declares that it takes a
+key with a FastAPI dependency, next to its access declaration:
+
+```python
+from fastapi import APIRouter, Depends
+
+from app.platform.access import public
+from app.platform.idempotency import idempotent
+
+router = APIRouter()
+
+
+@router.post("/records", status_code=201, dependencies=[Depends(public), Depends(idempotent)])
+async def create_record(record: Record, session: Session, response: Response) -> dict[str, str]:
+    ...
+```
+
+- `idempotent` is the dependency itself (used as `Depends(idempotent)`,
+  not called). It is not an access declaration: the route still
+  declares `public`, `signed_in` (as a parameter), or a capability.
+  The tests put it in `dependencies=[...]` after `public`, and on a
+  `signed_in` route with `signed_in` as a handler parameter; on the rate
+  limited probe route it comes before `rate_limit(...)`.
+- The handler is unchanged: it takes the request's session from
+  `get_session` (F3), writes, and returns; it sets `Location` and `ETag`
+  through FastAPI's `response: Response` parameter.
+- Nothing else in `app.platform.idempotency` is imported by the tests.
+
+### F7: At run time
+
+- `Idempotency-Key` missing: `400 request.idempotency_key_required`. A
+  value that is not a UUID (`not-a-uuid`, `12345`): `400
+  request.invalid`. The handler does not run. The tests send keys as
+  lowercase UUIDs (`str(uuid.uuid4())`).
+- The key's owner: the signed-in user (the token's `sub`) on a route
+  that declares `signed_in`; before sign-in the device ID
+  (`X-Device-Id`). F7-9 sends two users' requests from one device with
+  one key; F7-10 sends two devices' requests with one key on a `public`
+  route.
+- A new key: the handler runs; its status and body are stored. The same
+  key with the same body: the stored status and body, the stored
+  `Location`, `ETag`, and `Content-Type`, and the header
+  `Idempotent-Replayed: true`; the handler does not run again. A
+  response from a run of the handler never carries
+  `Idempotent-Replayed`. Any other header (the probe's `X-Probe-Extra`)
+  is not stored or replayed. The tests compare the replayed JSON body
+  with the first one in full (including the record's ID, and, for a
+  stored `4xx`, the first request's `requestId`).
+- "The same body": method, path, and body; a JSON body
+  (`application/json`) with sorted keys and no whitespace, so
+  `{"name":"Dinner","amount":120}` and
+  `{ "amount": 120,\n  "name": "Dinner" }` are the same; any other body
+  (`text/plain`) as its bytes, so a changed space is another body.
+  Another body, path, or method with the same key: `409
+  request.idempotency_mismatch`.
+- A key in flight (the first request has no response yet): `409
+  request.idempotency_in_progress` and the handler does not run (F7-4,
+  while the first handler waits on an event; and a row put back in
+  flight 30 seconds ago). In flight for more than 60 seconds: abandoned,
+  the request runs again (a row put back in flight 61 seconds ago).
+- A key older than 24 hours (`created_at` and `completed_at` put back 25
+  hours): expired; the request runs as for a new key, even with another
+  body, and its row is replaced: one row for the key, with the new
+  response, a `created_at` within the last hour, and the old body now a
+  mismatch.
+- A `2xx` is stored in the handler's transaction: when that transaction
+  cannot commit (a deferred unique constraint of the probe table), the
+  answer is a `5xx`, and neither the record nor a row for the key is
+  stored; the retry runs.
+- A `5xx` (a handler that raises, a handler's `503`, a commit that
+  fails) stores nothing: no row for the key is left, and the retry runs
+  the handler and answers `201` without `Idempotent-Replayed`.
+- A `4xx` that the handler raises (`AppError(422, "f7probe.refused")`)
+  is stored, after the handler's own writes are rolled back (the probe
+  table stays empty), and returned for the same key and body.
+- Refused before the handler (`400` for the body's schema, `401` with
+  no token, `429` over the route's own limit, `503` with Redis on a
+  closed port): no row for the key, and a retry with the same key runs
+  the handler.
+
+### F7: The table
+
+The tests read `idempotency_keys` through a connection of their own,
+with the columns of data-model.md, section 6.3: `key`, `user_id`,
+`device_id`, `method`, `path`, `request_hash`, `status`,
+`response_headers`, `response_body`, `created_at`, `completed_at`.
+
+- `key`, `user_id`, and `device_id` are compared as text (`::text`,
+  lowercase UUIDs), so a `uuid` or a `text` column both fit. `user_id` is
+  null before sign-in and `device_id` is null when `user_id` is set.
+- `method` is the upper-case method, `path` the request's path
+  (`/v1/<segment>/records`), `request_hash` not empty, `status` the
+  integer status, `created_at` and `completed_at` `timestamptz`.
+- `response_body` is JSON, text, or bytes that hold the response's
+  JSON; `response_headers` is a JSON object (or its text) whose names
+  are compared without case and that holds `location` and `etag`.
+- A row in flight is one whose `status` and `completed_at` are null;
+  the tests make one by setting both to null on a stored row and moving
+  `created_at` back. The tests also move `created_at` and
+  `completed_at` back 25 hours. The columns must allow it.
+- The table comes from the migration `0003` (spec, section 4.2); its
+  cleanup is F9's.
+
+### F7: The contract
+
+- On every operation that declares `idempotent`: a header parameter
+  (inline or a `$ref` to `components/parameters`) named
+  `Idempotency-Key`, `required: true`, schema `type: string`, `format:
+  uuid`; and the responses `400` and `409`, each
+  `application/json` with schema `$ref:
+  #/components/schemas/ErrorResponse`.
+- An operation that does not declare it has no `Idempotency-Key`
+  parameter and no `409`; the health check has none.
+- `PLATFORM_ERROR_CODES` (`app/platform/errors.py`) holds
+  `request.idempotency_key_required`, `request.idempotency_mismatch`,
+  and `request.idempotency_in_progress`.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F7-1 | `POST` with a new key (I, A) | `201`, no `Idempotent-Replayed`; the handler ran once; one record; one row with `status` `201`, the body, the method, the path, the device as owner, and `completed_at` set |
+| F7-2 | The same key and body again (I, A) | The stored response with `Idempotent-Replayed: true`; the handler ran once; one record; one row |
+| F7-3 | The same key, `amount` 121 instead of 120 (A) | `409 request.idempotency_mismatch`; the handler ran once |
+| F7-4 | The same key while the first handler waits (I) | `409 request.idempotency_in_progress`; after the first answers `201`, the same key gets its replay |
+| F7-5 | The handler raises; the handler answers `503`; the commit fails (I) | `500` / `503` / a `5xx`; no row for the key and no record; the retry runs and answers `201` |
+| F7-6 | The handler writes, then raises `422 f7probe.refused` (I) | The `422` is stored with no record, and replayed for the same key and body |
+| F7-7 | No `Idempotency-Key` (A) | `400 request.idempotency_key_required`; the handler did not run |
+| F7-8 | `not-a-uuid`, `12345` (A) | `400 request.invalid`; the handler did not run |
+| F7-9 | Two users, one device, one key (I) | Both `201`, each with its own `userId` and record; rows owned by each user, `device_id` null |
+| F7-10 | Two devices, one key, before sign-in (I) | Both `201` with their own records; rows owned by each device |
+| Extra | A row in flight 30 s, then 61 s (I) | `409 request.idempotency_in_progress`, then `201` from a new run; one row, completed |
+| Extra | A row 25 h old, then another body (I) | `201` from a new run; the new body replays, the old one is `409 request.idempotency_mismatch`; one row |
+| Extra | The same JSON fields reordered and respaced; another value (I) | The replay; `409 request.idempotency_mismatch` |
+| Extra | The same `text/plain` bytes; one space less (I) | The replay; `409 request.idempotency_mismatch` |
+| Extra | A replay (I) | Same `Location`, `ETag`, `Content-Type`; `Idempotent-Replayed: true`; no `X-Probe-Extra`; stored headers hold `location` and `etag`, not `x-probe-extra` |
+| Extra | `400` schema, `401`, `429`, `503` before the handler (I) | No row for the key; the retry with the same key runs |
+| Extra | The same key and body on another path, and with `PUT` (A) | `409 request.idempotency_mismatch`, both |
+| Extra | The contract (C) | The header, `400`, and `409` on the declaring operations only; the three codes in `PLATFORM_ERROR_CODES` |
