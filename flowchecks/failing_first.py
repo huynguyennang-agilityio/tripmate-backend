@@ -20,10 +20,12 @@ that matches the caller's `no_test_pattern` (the file holds no test), whatever t
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -38,6 +40,61 @@ FAILED_FIRST_EXIT_CODES = frozenset({1, 2})
 DEFAULT_TEST_FILE_PATTERN = "test_*.py"
 # A shell's exit codes for a command that cannot be run (126) or is not found (127).
 CANNOT_RUN_EXIT_CODES = frozenset({126, 127})
+# How many trailing lines of a run's output an error message keeps.
+OUTPUT_TAIL_LINES = 200
+
+
+class PatternError(ValueError):
+    """A pattern the caller gave is not usable (so the check fails, never passes)."""
+
+
+def validate_patterns(test_file_pattern: str, no_test_pattern: str | None) -> None:
+    """Raise PatternError for a pattern that could match nothing or is not a regex."""
+    if test_file_pattern.startswith(("/", "./")):
+        raise PatternError(
+            f"the test file pattern {test_file_pattern!r} starts with `/` or `./`: paths are "
+            "matched from the repository root with no such prefix (write `tests/**/*.test.js`)"
+        )
+    if "{" in test_file_pattern or "}" in test_file_pattern:
+        raise PatternError(
+            f"the test file pattern {test_file_pattern!r} uses braces, which are not supported "
+            "(use `[...]` or a simpler pattern such as `*.test.*`)"
+        )
+    if no_test_pattern:
+        try:
+            re.compile(no_test_pattern, re.MULTILINE)
+        except re.error as error:
+            raise PatternError(
+                f"the no-test pattern is not a valid regular expression: {error}"
+            ) from error
+
+
+def _tail(out: str) -> str:
+    lines = out.splitlines()
+    if len(lines) <= OUTPUT_TAIL_LINES:
+        return out
+    return f"... ({len(lines) - OUTPUT_TAIL_LINES} earlier lines left out)\n" + "\n".join(
+        lines[-OUTPUT_TAIL_LINES:]
+    )
+
+
+def _run(command: Sequence[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[bytes]:
+    """Run `command` in its own process group; on timeout kill the whole group, then raise."""
+    proc = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(command, proc.returncode, stdout)
 
 
 class RunError(RuntimeError):
@@ -61,6 +118,14 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
         elif pattern[i] == "?":
             out.append("[^/]")
             i += 1
+        elif pattern[i] == "[" and (end := pattern.find("]", i + 2)) != -1:
+            body = pattern[i + 1 : end]
+            if body[0] in "!^":
+                body = "^/" + re.sub(r"([\\\]\[])", r"\\\1", body[1:])
+            else:
+                body = re.sub(r"([\\\]\[^])", r"\\\1", body)
+            out.append(f"[{body}]")
+            i = end + 1
         else:
             out.append(re.escape(pattern[i]))
             i += 1
@@ -91,9 +156,12 @@ def added_tests(
             continue
         parent = f"{commit.sha}^"
         ids: list[str] = []
+        renamed: set[str] | None = None
+        matched = 0
         for path in _git.changed_files(repo, parent, commit.sha):
             if not matches_pattern(path, test_file_pattern):
                 continue
+            matched += 1
             before_text = _git.show_file(repo, parent, path)
             after_text = _git.show_file(repo, commit.sha, path)
             if path.endswith(".py"):
@@ -102,10 +170,33 @@ def added_tests(
                 names = [n for n in after.functions if n not in before.functions]
                 ids += [_testsource.make_id(path, n) for n in names]
             elif before_text is None and after_text is not None:
-                ids.append(path)
+                if renamed is None:
+                    renamed = _renamed_paths(repo, parent, commit.sha)
+                if path not in renamed:
+                    ids.append(path)
+        print(
+            f"  commit {commit.sha[:7]}: {matched} test file(s) match {test_file_pattern!r}",
+            file=sys.stderr,
+        )
         if ids:
             found.append((commit.sha, sorted(ids)))
     return found
+
+
+def _renamed_paths(repo: str | os.PathLike[str], old: str, new: str) -> set[str]:
+    """New paths of the files that git sees as renamed or moved between two revisions."""
+    out = _git.git(repo, "diff", "--name-status", "-M", "-z", old, new)
+    fields = out.decode("utf-8", "replace").split("\0")
+    renamed: set[str] = set()
+    i = 0
+    while i < len(fields) and fields[i]:
+        status = fields[i]
+        if status[0] in "RC":
+            renamed.add(fields[i + 2])
+            i += 3
+        else:
+            i += 2
+    return renamed
 
 
 def check(
@@ -122,6 +213,7 @@ def check(
 
     Raises RunError when a run ended in a way that is neither a pass nor a failure of the test.
     """
+    validate_patterns(test_file_pattern, no_test_pattern)
     plan = added_tests(repo, base, head, test_file_pattern)
     no_test = re.compile(no_test_pattern, re.MULTILINE) if no_test_pattern else None
     if not plan:
@@ -154,14 +246,7 @@ def _run_one(
 ) -> None:
     whole_file = "::" not in test
     try:
-        result = subprocess.run(
-            [*test_command, test],
-            cwd=tree,
-            check=False,
-            timeout=timeout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
+        result = _run([*test_command, test], tree, timeout)
     except subprocess.TimeoutExpired:
         problems.append(f"{test}: timed out after {timeout:.0f} seconds")
         return
@@ -181,7 +266,9 @@ def _run_one(
         # that passed.
         pass
     else:
-        problems.append(f"{test}: the run ended with exit {result.returncode}, not 1 or 2:\n{out}")
+        problems.append(
+            f"{test}: the run ended with exit {result.returncode}, not 1 or 2:\n{_tail(out)}"
+        )
 
 
 def _judge_file(
@@ -194,10 +281,14 @@ def _judge_file(
 ) -> None:
     """A test file of another language: non-zero is failing first, but an error of the run is not."""
     if returncode in CANNOT_RUN_EXIT_CODES:
-        problems.append(f"{test}: the test command could not run (exit {returncode}):\n{out}")
+        problems.append(
+            f"{test}: the test command could not run (exit {returncode}):\n{_tail(out)}"
+        )
+    elif returncode < 0:
+        problems.append(f"{test}: the run was killed by signal {-returncode}:\n{_tail(out)}")
     elif no_test is not None and no_test.search(out):
         problems.append(
-            f"{test}: the run found no test in the file (no-test pattern matched):\n{out}"
+            f"{test}: the run found no test in the file (no-test pattern matched):\n{_tail(out)}"
         )
     elif returncode == 0:
         passing.append(test)
@@ -239,6 +330,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             test_file_pattern=args.test_file_pattern or DEFAULT_TEST_FILE_PATTERN,
             no_test_pattern=args.no_test_pattern or None,
         )
+    except PatternError as error:
+        print(f"Failing first: {error}", file=sys.stderr)
+        return 1
     except RunError as error:
         print(
             "Failing first: a run broke (this is an error of the run, not a failing test):",

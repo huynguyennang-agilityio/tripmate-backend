@@ -163,10 +163,10 @@ jobs:
           # `flowchecks-ref` older than F15, whose command line has no such flags.
           extra_args=()
           if [ "$TEST_FILE_PATTERN" != "test_*.py" ]; then
-            extra_args+=(--test-file-pattern "$TEST_FILE_PATTERN")
+            extra_args+=("--test-file-pattern=$TEST_FILE_PATTERN")
           fi
           if [ -n "$NO_TEST_PATTERN" ]; then
-            extra_args+=(--no-test-pattern "$NO_TEST_PATTERN")
+            extra_args+=("--no-test-pattern=$NO_TEST_PATTERN")
           fi
           cd .flowchecks-src
           uv run --no-project --python 3.13 python -m flowchecks.failing_first \
