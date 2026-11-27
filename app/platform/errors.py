@@ -42,11 +42,12 @@ NOT_FOUND = "request.not_found"
 METHOD_NOT_ALLOWED = "request.method_not_allowed"
 NOT_SIGNED_IN = "auth.not_signed_in"
 TOKEN_EXPIRED = "auth.token_expired"  # noqa: S105 (an error code)
+RATE_LIMITED = "rate.limited"
 
 # Codes the platform returns itself; each needs text in `tripmate-contracts`.
 # (`server.unavailable` is returned by the health check and the rate limit, cards F1 and F6;
 # `server.not_implemented` by a stub route, card F12; the two `auth.` codes by the access check,
-# card F5.)
+# card F5; `rate.limited` by the rate limits, card F6.)
 # The two field codes are all a `fields` entry can carry, so the set stays closed.
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -60,6 +61,7 @@ PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
         METHOD_NOT_ALLOWED,
         NOT_SIGNED_IN,
         TOKEN_EXPIRED,
+        RATE_LIMITED,
     }
 )
 
@@ -75,12 +77,14 @@ class AppError(Exception):
         code: str,
         params: dict[str, Any] | None = None,
         fields: list[dict[str, str]] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(code)
         self.status = status
         self.code = code
         self.params = params or {}
         self.fields = fields
+        self.headers = headers  # extra response headers, such as `Retry-After`
 
 
 def error_body(error: AppError, request_id: str | None) -> dict[str, Any]:
@@ -124,7 +128,7 @@ async def _app_error_handler(request: Request, error: Exception) -> JSONResponse
     if not isinstance(error, AppError):  # registered for AppError only
         raise error
     content = error_body(error, _request_id_of(request))
-    return JSONResponse(status_code=error.status, content=content)
+    return JSONResponse(status_code=error.status, content=content, headers=error.headers)
 
 
 async def _validation_error_handler(request: Request, error: Exception) -> JSONResponse:
@@ -274,7 +278,10 @@ class RequestIdMiddleware:
             else:
                 logger.exception("Unexpected error in request %s", request_id)
                 status, body = 500, error_body(AppError(500, SERVER_ERROR), request_id)
-            await JSONResponse(status_code=status, content=body)(scope, receive, send_with_id)
+            headers = error.headers if isinstance(error, AppError) else None
+            await JSONResponse(status_code=status, content=body, headers=headers)(
+                scope, receive, send_with_id
+            )
 
 
 def install_request_id(app: FastAPI) -> None:
