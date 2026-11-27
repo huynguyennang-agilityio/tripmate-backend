@@ -60,6 +60,11 @@ def declares_access[F: Callable[..., Any]](dependency: F) -> F:
     return dependency
 
 
+def is_access_declaration(dependency: Any) -> bool:
+    """Whether `dependency` was marked with `declares_access` (`public`, `signed_in`, a capability)."""
+    return dependency in _ACCESS_DEPENDENCIES
+
+
 @dataclass(frozen=True)
 class Caller:
     """Who calls: the user ID and session ID of the access token."""

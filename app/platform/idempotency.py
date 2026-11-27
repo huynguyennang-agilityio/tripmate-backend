@@ -51,6 +51,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.platform.access import (
     HEALTH_PATH,
     checked_caller,
+    is_access_declaration,
     public,
     route_needs_signed_in,
     signed_in,
@@ -549,18 +550,37 @@ def _allowed_after_idempotent(call: Any) -> bool:
     return call is public or call is signed_in or hasattr(call, "route_limit")
 
 
+def _access_after_route_dependencies(dependants: list[Dependant]) -> bool:
+    """Whether an access declaration other than `public` and `signed_in` (a capability) is in
+    these dependants or below them."""
+    return any(
+        (is_access_declaration(d.call) and d.call is not public and d.call is not signed_in)
+        or _access_after_route_dependencies(d.dependencies)
+        for d in dependants
+    )
+
+
 def misplaced_idempotent(app: FastAPI) -> list[str]:
-    """Each route (`METHOD /path`) with a dependency after `idempotent` that may refuse."""
+    """Each route (`METHOD /path`) where `idempotent` is not in its `dependencies=[...]` (it is a
+    parameter or inside another dependency), or where a dependency that may refuse follows it.
+
+    A dependency of a handler parameter runs after every route dependency, so an access
+    declaration there (a capability) follows `idempotent` as well.
+    """
     found: list[str] = []
     for context in iter_route_contexts(app.routes):
         route = context.original_route
         if not isinstance(route, APIRoute):
             continue
         calls = [depends.dependency for depends in route.dependencies]
-        if idempotent not in calls:
-            continue
-        after = calls[calls.index(idempotent) + 1 :]
-        if any(not _allowed_after_idempotent(call) for call in after):
+        if idempotent in calls:
+            after = calls[calls.index(idempotent) + 1 :]
+            parameters = route.dependant.dependencies[len(route.dependencies) :]
+            wrong = any(not _allowed_after_idempotent(call) for call in after)
+            wrong = wrong or _access_after_route_dependencies(parameters)
+        else:
+            wrong = _declares(route.dependant)
+        if wrong:
             found.extend(f"{method} {context.path}" for method in sorted(context.methods or ()))
     return sorted(found)
 
@@ -574,9 +594,9 @@ def check_idempotent_order(app: FastAPI) -> None:
     misplaced = misplaced_idempotent(app)
     if misplaced:
         raise RuntimeError(
-            "Depends(idempotent) must be the last of a route's dependencies (a refusal after it "
-            "is stored and replayed); declare it after the access and guard dependencies of: "
-            + ", ".join(misplaced)
+            "Depends(idempotent) must be in a route's `dependencies=[...]`, after its access and "
+            "guard dependencies, and no capability may be a handler parameter (a refusal after "
+            "the key is claimed is stored and replayed); fix: " + ", ".join(misplaced)
         )
 
 

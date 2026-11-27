@@ -6,12 +6,12 @@ PostgreSQL (R1-3, R1-5, R1-6, R1-9), the order of `idempotent` among a route's d
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 from fastapi import Depends, FastAPI
 
-from app.platform.access import public
+from app.platform.access import declares_access, public, signed_in
 from app.platform.db import SessionHandoff
 from app.platform.errors import install_openapi
 from app.platform.idempotency import (
@@ -290,3 +290,66 @@ def test_F7_R1_10_a_409_the_route_documents_is_kept_and_the_idempotency_text_add
     assert response["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ErrorResponse"
     }
+
+
+# -- R2-1: shapes the check of R1-4 must also see -------------------------------------------
+
+
+@declares_access
+async def _capability() -> None:
+    """A capability: an access declaration that may refuse with 403."""
+
+
+def test_F7_R2_1_a_capability_as_a_handler_parameter_is_reported() -> None:
+    app = FastAPI()
+
+    async def handler(guard: Annotated[None, Depends(_capability)]) -> None:
+        return None
+
+    app.post("/x", dependencies=[Depends(public), Depends(idempotent)])(handler)
+
+    assert misplaced_idempotent(app) == ["POST /x"]
+    with pytest.raises(RuntimeError, match="POST /x"):
+        check_idempotent_order(app)
+
+
+async def _lookup(guard: Annotated[None, Depends(_capability)]) -> None:
+    return None
+
+
+async def _declares_key(key: Annotated[None, Depends(idempotent)]) -> None:
+    return None
+
+
+async def _nested_key(found: Annotated[None, Depends(_declares_key)]) -> None:
+    return None
+
+
+async def _uses_lookup(found: Annotated[None, Depends(_lookup)]) -> None:
+    return None
+
+
+def test_F7_R2_1_a_capability_inside_a_parameter_dependency_is_reported() -> None:
+    app = FastAPI()
+    app.post("/x", dependencies=[Depends(idempotent)])(_uses_lookup)
+
+    assert misplaced_idempotent(app) == ["POST /x"]
+
+
+def test_F7_R2_1_idempotent_as_a_parameter_or_in_a_sub_dependency_is_reported() -> None:
+    app = FastAPI()
+    app.post("/parameter")(_declares_key)
+    app.post("/nested", dependencies=[Depends(public)])(_nested_key)
+
+    assert misplaced_idempotent(app) == ["POST /nested", "POST /parameter"]
+
+
+def test_F7_R2_1_public_and_signed_in_as_parameters_stay_allowed() -> None:
+    app = FastAPI()
+
+    async def handler(caller: Annotated[None, Depends(signed_in)]) -> None:
+        return None
+
+    app.post("/x", dependencies=[Depends(idempotent)])(handler)
+
+    assert misplaced_idempotent(app) == []
