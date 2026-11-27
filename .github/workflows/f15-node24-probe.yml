@@ -1,0 +1,22 @@
+# Throwaway caller for F15's pull request: shows the reusable workflow setting up Node 24
+# before the caller's setup command. Never merged; the pull request is closed after one run.
+name: F15 Node 24 probe
+
+on:
+  pull_request:
+    branches: [feat/F15-failing-first-any-language]
+
+permissions:
+  contents: read
+
+jobs:
+  flow:
+    uses: ./.github/workflows/flow-checks.yml
+    with:
+      rules-file: .github/risk-paths.toml
+      test-command: node --test --test-reporter=tap
+      setup-command: node --version
+      test-file-pattern: tests/**/*.test.js
+      no-test-pattern: '^ok \d+ - \S+\.test\.js$'
+      node-version: "24"
+      flowchecks-ref: 4123070d8bf2447385b37a15f9cae1d285137398
