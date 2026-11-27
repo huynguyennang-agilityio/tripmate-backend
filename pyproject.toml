@@ -29,6 +29,7 @@ dependencies = [
     "sentry-sdk>=3,<4",
     "pyjwt[crypto]",
     "argon2-cffi",
+    "opentelemetry-instrumentation-httpx>=0.66b2",
 ]
 
 [dependency-groups]

@@ -7,22 +7,35 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from opentelemetry.sdk.metrics.export import MetricReader
+from opentelemetry.sdk.trace.export import SpanExporter
+from sentry_sdk.transport import Transport
 
 from app.platform import health, whoami
 from app.platform.access import install_access_contract, install_access_keys, install_device_id
 from app.platform.config import Settings, load_settings, load_settings_or_exit
 from app.platform.db import create_engine, install_sessions
 from app.platform.errors import install_error_handlers, install_openapi, install_request_id
+from app.platform.logging import Observability, install_observability, install_request_log
 from app.platform.modules import include_routes, scan_modules
 from app.platform.rate_limits import install_rate_limits, install_rate_limits_contract
 from app.platform.redis_client import create_redis
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    sentry_transport: Transport | None = None,
+    span_exporter: SpanExporter | None = None,
+    metric_reader: MetricReader | None = None,
+) -> FastAPI:
     """Build the app from the settings (read from the environment when not given).
 
     Scans `app/` for modules on every call. Neither PostgreSQL nor Redis is
     reached here or at start-up, so the app starts when either is down.
+
+    The three keywords replace the real Sentry transport, span exporter, and metric exporter
+    (the tests pass in-memory ones); each call routes its app's signals to what it is given.
     """
     settings = settings or load_settings()
 
@@ -33,10 +46,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redis = create_redis(settings.redis_url.get_secret_value())
         app.state.resources = health.Resources(settings.release_version, engine, redis)
         install_sessions(app, engine)
+        observability: Observability = app.state.observability
+        observability.start(engine, redis)
         try:
             yield
         finally:
             await redis.aclose()
+            # Flushes spans, metrics, and events while the engine can still answer the last
+            # reading of the outbox backlog.
+            await observability.shutdown()
             await engine.dispose()
 
     app = FastAPI(title="TripMate", version=settings.release_version, lifespan=lifespan)
@@ -54,14 +72,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     include_routes(app, registry)
     # Inside the request ID middleware, which answers its `AppError`.
     install_device_id(app)
+    # Inside the request ID middleware: reports a crash to Sentry with the request ID.
+    install_observability(
+        app,
+        settings,
+        sentry_transport=sentry_transport,
+        span_exporter=span_exporter,
+        metric_reader=metric_reader,
+    )
     # Added last, so it is the outermost middleware (see RequestIdMiddleware).
     install_request_id(app)
+    # The outermost: one log line and one latency point per request, whatever the status.
+    install_request_log(app)
     return app
 
 
 def main() -> None:
     settings = load_settings_or_exit()
-    uvicorn.run(create_app(settings), host="0.0.0.0", port=settings.port)  # noqa: S104
+    # Uvicorn's own loggers join ours (JSON on stdout), and its access log is off: it writes the
+    # query string, which can hold a token.
+    uvicorn.run(
+        create_app(settings),
+        host="0.0.0.0",  # noqa: S104
+        port=settings.port,
+        log_config=None,
+        access_log=False,
+    )
 
 
 if __name__ == "__main__":
