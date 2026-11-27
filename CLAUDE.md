@@ -135,7 +135,7 @@ always skipped here; never require it.
 
 | Check | Fails when |
 |-------|------------|
-| `failing-first` | A test that a test commit (trailer `Agent: test`) adds passes at that commit. Each test commit is checked out and run in turn; a commit that only changes tests is not asked to fail. Pytest exit 1 or 2 counts as failing first, and so does exit 4 when its output has `ERROR collecting <the test's own file>` (a test ID whose module fails to import); any other exit, such as a crashing `conftest.py`, is an error of the run and fails the check. A test file of another language (the caller's `test-file-pattern`, default `test_*.py`) that a commit adds is run whole as `test-command <path>` and fails first on any non-zero exit; an error of the run is a command that cannot start, exit 126 or 127, a signal, or output that matches the caller's `no-test-pattern`. Runs against PostgreSQL 16 and Redis 7. |
+| `failing-first` | A test that a test commit (trailer `Agent: test`) adds passes at that commit. Each test commit is checked out and run in turn; a commit that only changes tests is not asked to fail. Pytest exit 1 or 2 counts as failing first, and so does exit 4 when its output has `ERROR collecting <the test's own file>` (a test ID whose module fails to import); any other exit, such as a crashing `conftest.py`, is an error of the run and fails the check. A test file of another language (the caller's `test-file-pattern`, default `test_*.py`) that a commit adds is run whole as `test-command <path>` and fails first on any non-zero exit; an error of the run is a command that cannot start, exit 126 or 127, a signal, or output that matches the caller's `no-test-pattern`. The caller's `setup-command` also runs (as `bash -c`, once) in each test commit's own fresh worktree before that commit's tests; a setup that exits non-zero, cannot start, or times out is an error of the run that names the commit (full SHA). This needs a `flowchecks-ref` that holds F16; with an older one the setup runs only once, in the checkout, as before. Runs against PostgreSQL 16 and Redis 7. |
 | `test-lock` | A commit without the trailer changes, skips, or deletes a locked test (its function or method, with the module and class context it uses: imports, constants, helpers, `pytestmark`) or a locked support file; the head is compared with the last locked state too, so a merge cannot hide a change. A test commit that touches a path outside `tests/` fails too, and so does any commit without the trailer that adds, changes, or deletes a `conftest.py` at any depth (also one that came from `main`), and so does a merge commit that leaves any `conftest.py` different from its text at the last test commit that touched it (or at the merge base); a needed change goes through the test agent. A new test a code commit adds is not locked. |
 | `mutation` | A changed rule file has a surviving, untested, or unchecked mutant (mutmut), or gains a `# pragma: no mutate` or `no cover`, that the pull request description does not list |
 | `risk-gate` | A High path changed and the pull request has no `human-approved` label |
@@ -192,6 +192,13 @@ always skipped here; never require it.
   `--no-test-pattern` only when their inputs differ from the defaults, so a caller on the defaults
   runs with any `flowchecks-ref`; a caller that sets either must pin a `flowchecks-ref` that holds
   F15 (move the workflow ref and `flowchecks-ref` together).
+- Setup in each test commit (F16): each test commit that adds tests gets its own detached worktree, and
+  the step adds `--setup-command` only when the input is set and the checked-out `flowchecks` code
+  supports it (otherwise a `::notice::` says the setup runs only once, in the checkout). The step that
+  runs the setup once in the checkout stays: the backend's `uv run` in the worktrees uses the venv of
+  the checkout, and `uv sync --locked` in a worktree syncs that venv to the commit's lock. A caller
+  that needs the dependencies of each commit (for example `npm ci`, so `node_modules` matches that
+  commit's lock) must pin a `flowchecks-ref` that holds F16.
 - A run of a non-Python file is in error when it is killed by a signal (a negative return code), or
   exits 126 or 127, or cannot start, or prints the no-test pattern, or times out (the runner's whole
   process group is killed). An exit of 128 or more from a wrapper counts as failing. A file that a test commit moves with
