@@ -257,6 +257,31 @@ never reads a `.env` file. `.env.example` lists every setting with no
 value. An error names the setting and never prints its value. Add a new
 setting to `app/platform/config.py` and `.env.example` together.
 
+`SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and `OTEL_EXPORTER_OTLP_HEADERS` are
+optional (see "Observability"); a value that is given is checked, and a malformed one
+stops start-up and names the setting, never its value.
+
+## Observability
+
+`app/platform/logging.py` (EPIC-11 spec, section 2.6):
+
+- Every request writes one JSON line on standard output (`event` is `request`): request
+  ID, user ID, trip ID, method, path (no query string), status, duration. It never holds an
+  email, a name, a token, or a body; add a field only from the platform's own values, never
+  from the request's headers or body. Uvicorn's access log is off.
+- Traces (FastAPI, SQLAlchemy, Redis; `Observability.instrument_http_client` for an `httpx`
+  client) and metrics (`http.server.request.duration`, `tripmate.queue.depth`,
+  `tripmate.job.age`, `tripmate.outbox.waiting`) are pushed with the OpenTelemetry OTLP
+  exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; there is no metrics route. Card F9 feeds
+  the queue gauges through `Observability.set_queue_state`; they read 0 until then.
+- An unexpected exception goes to Sentry with the `RELEASE_VERSION` release and a `request_id`
+  tag, when `SENTRY_DSN` is set. No request data and no local variable is sent.
+- Each `create_app` call makes its own providers and Sentry client and never sets
+  OpenTelemetry's global providers. Sending happens in background threads, so a request does
+  not wait for Sentry or the collector; the end of the app's lifespan flushes with a short
+  timeout. `create_app` takes `sentry_transport`, `span_exporter`, and `metric_reader` for
+  tests.
+
 ## Layout and conventions
 
 - `app/platform/` is shared by every module, one file per part
