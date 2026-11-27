@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 2.0
+**Version:** 2.1
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -30,6 +30,7 @@ Test case levels are the letters of [test-strategy.md](https://github.com/huyngu
 | [F11](#f11) | Local stack, image, and production on Render | M | High | F9, F10 | 5 |
 | [F15](#f15) | Failing first for tests in any language | S | High | F14 | 3 |
 | [F16](#f16) | Failing first sets up each test commit | S | High | F15 | 3 |
+| [F17](#f17) | Examples on every success response | S | High | F12 | 3 |
 
 ## F1
 
@@ -795,6 +796,52 @@ None.
 
 None.
 
+## F17
+
+**F17 Examples on every success response**
+
+**Facts**
+
+| Fact | Value |
+|------|-------|
+| Epic | EPIC-11 |
+| Repository | `tripmate-backend` |
+| Machine | Mac 1, wave 3 |
+| Size | S |
+| Risk | High: it changes the contract and the example check of `app/platform/contract.py` |
+| Depends on | F12 |
+| Requirements | Cross-client API contract tests |
+| Spec sections | 2.10, 2.7 |
+
+**Scope**
+
+- The example check of F12 also checks every operation that is not a stub: each `2xx` response with content needs an example, on the media type or on its schema, or the check fails and names the operation. A stub keeps the F12 rule: every response schema has an example.
+- A `2xx` response with no content, such as `204`, needs none; a `4xx` or `5xx` response of an operation that is not a stub is not checked.
+- `GET /v1/health` answers with a response model `Health`, with the fields `status` and `version`, and an example: `{"status": "ok", "version": "0.1.0"}`. The answer itself does not change.
+- The contract this makes is the first with an example on `GET /v1/health`, which the mock modes of WF2 and MF2 return (cases WF2-1, MF2-1).
+
+**Leaves out**
+
+- Examples on error responses of routes that are not stubs: `ErrorResponse` already has one.
+- The mock modes themselves: WF2 and MF2.
+
+**Done when**
+
+2.10: every success response with content has an example, and the check fails and names an operation without one; `GET /v1/health` has its example in the contract
+
+**Test cases**
+
+| Case | Kind | Given | Expected | Level |
+|------|------|-------|----------|-------|
+| F17-1 | Error | A route that is not a stub, whose `200` response model has no example | The check fails and names the operation | C |
+| F17-2 | Main | The app's own contract | The check passes, and `GET /v1/health` `200` has an example with `status` and `version` | C |
+| F17-3 | Edge | A route that is not a stub, with a `204` response and no content, and one whose `200` response model has an example | Neither is named | C |
+| F17-4 | Edge | A route that is not a stub, with an example on its `200` response and none on a `404` response model of its own | It is not named | C |
+
+**Manual checks**
+
+None.
+
 ## F11
 
 **F11 Local stack, image, and production on Render**
@@ -865,3 +912,4 @@ None.
 | 1.8 | 2026-11-26 | F15 scope, as the product owner decided before the code: a non-zero exit counts as failing; an error of the run is a command that cannot start (exit 126 or 127), a run killed by a signal, or output that matches the caller's no-test pattern; the runtime set-up is shown on one CI run, with no case. |
 | 1.9 | 2026-11-27 | New task F16, as the product owner decided during CT2: failing first runs the caller's setup command in the worktree of each test commit. |
 | 2.0 | 2026-11-27 | F6 scope and risk, as the product owner decided before the code: the ceiling `RATE_LIMIT_PER_MINUTE` (300, off at `0`), counted for the IP address from `X-Forwarded-For` and for the user, in a fixed window, with the health check left out; the contract documents `429` and `503`, so F6 is High risk; the IP address counted before the token check; a service counting a key itself. |
+| 2.1 | 2026-11-27 | New task F17, as the product owner decided after CT2 tagged `contracts-v0.1.0` with no example on `GET /v1/health`: the example check covers every success response, not only stubs, and the health check gets a response model with an example. |

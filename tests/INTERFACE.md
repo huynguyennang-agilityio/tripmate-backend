@@ -31,6 +31,10 @@ What the tests need from the code, and nothing more, card by card:
   2.2 (rows "Device ID", "Access declaration", "Token check") and 2.3,
   security.md, section 2 (row "Access token"), and api-design.md,
   sections 2 and 4.2 (cases F5-1 to F5-10), in the section "F5: Access".
+- F17 Examples on every success response: from the EPIC-11 spec,
+  version 3.2, sections 2.10 and 2.7, and the task's scope, version 2.1
+  (cases F17-1 to F17-4), in the section "F17: Examples on every
+  success response".
 - F6 Rate limits: from the EPIC-11 spec, version 2.8, sections 2.2 (row
   "Rate limits" and the order of the steps), 2.3, and the four F6
   decisions in 5.1, security.md, section 2.2, and api-design.md,
@@ -976,7 +980,8 @@ python -m app.platform.contract check <openapi.json path>
   method, one space, and the path as written in the contract, for
   example `GET /v1/places`. A message never names an operation whose
   response schemas all have an example.
-- Operations that are not stubs are not checked.
+- Operations that are not stubs are not checked (F12; F17 widens this,
+  see "F17: Examples on every success response").
 - `check` reads the file, prints the messages (stdout or stderr), and
   exits non-zero when there is one; it exits `0` when there is none.
 
@@ -986,6 +991,34 @@ python -m app.platform.contract check <openapi.json path>
 | F12-2 (C) | A module folder whose `api.py` declares one stub with an example | The generated contract has `x-stub: true` on `GET /v1/<segment>`, and not on `GET /v1/health` |
 | F12-2 (A) | The same module, the app built with `create_app()` (PostgreSQL and Redis on closed ports) | `GET /v1/<segment>` returns `501` with `{"error": {"code": "server.not_implemented", "params", "fields", "requestId"}}` |
 | F12-3 | Control: one stub with an example. Then a second stub, `GET /v1/bare-<segment>`, whose response model has none | Control: `check_examples` gives `[]`, `check` exits `0`. Then: `check_examples` gives messages, one naming `GET /v1/bare-<segment>` and none naming `GET /v1/<segment>`; `check` exits non-zero and its output names the bare stub and not the other |
+
+## F17: Examples on every success response
+
+The tests are in `tests/contract/platform/test_F17_examples.py` (level
+C). They use `generate`, `run_contract`, and `MODULE_PREFIX` of
+`tests/contract/platform/f12_support.py`, and the `module_folder`
+fixture, whose `api.py` declares plain FastAPI routes on a `router`
+(no `stub()`, no access declaration: the contract is only generated).
+
+- `check_examples(contract)` and `check` keep the F12 interface, and
+  also check every operation that is not marked `x-stub: true`: a
+  message names it as `<METHOD> <path>` when one of its `2xx` responses
+  has content with no example, neither on the media type (`example` or
+  `examples`) nor on its schema (after `$ref`).
+- A `2xx` response with no `content` (such as `204`) needs no example.
+- A `4xx` or `5xx` response of an operation that is not a stub is not
+  checked.
+- The app's own contract passes the check. `GET /v1/health` `200`
+  `application/json` has an example, on the media type or on its
+  schema, that is a JSON object with at least the keys `status` and
+  `version`.
+
+| Case | Given | Expected |
+|------|-------|----------|
+| F17-1 | A route `GET /v1/bare-<segment>`, not a stub, whose `200` response model has no example | `check_examples` gives a message naming it; `check` exits non-zero and its output names it |
+| F17-2 | The app with no change | `check_examples` gives `[]`, `check` exits `0`; the health example has `status` and `version` |
+| F17-3 | `DELETE /v1/gone-<segment>` answering `204` with no content, `GET /v1/good-<segment>` whose `200` model has an example, and the control `GET /v1/bare-<segment>` | The control is named; neither of the others is |
+| F17-4 | `GET /v1/maybe-<segment>` with an example on `200` and a `404` response model with none, and the control `GET /v1/bare-<segment>` | The control is named; `maybe` is not |
 
 ## F5: Access
 

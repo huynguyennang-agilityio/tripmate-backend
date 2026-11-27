@@ -12,6 +12,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, ConfigDict
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -43,8 +44,20 @@ async def _answers(ping: Awaitable[None]) -> bool:
     return True
 
 
-@router.get("/v1/health", dependencies=[Depends(public)])
-async def health(request: Request) -> dict[str, str]:
+class Health(BaseModel):
+    """The answer of a healthy instance. The example is what the mock modes of Web and Mobile
+    return (card F17)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"status": "ok", "version": "0.1.0"}]}
+    )
+
+    status: str
+    version: str
+
+
+@router.get("/v1/health", dependencies=[Depends(public)], response_model=Health)
+async def health(request: Request) -> Health:
     resources: Resources = request.app.state.resources
     database_ok, redis_ok = await asyncio.gather(
         _answers(ping_database(resources.engine)),
@@ -52,4 +65,4 @@ async def health(request: Request) -> dict[str, str]:
     )
     if not (database_ok and redis_ok):
         raise AppError(503, "server.unavailable")
-    return {"status": "ok", "version": resources.release_version}
+    return Health(status="ok", version=resources.release_version)
