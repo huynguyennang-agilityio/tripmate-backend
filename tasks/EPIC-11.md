@@ -6,7 +6,7 @@
 **Machine:** Mac 1\
 **Spec:** [EPIC-11 spec](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/specs/epic-11/spec.md)\
 **Status:** Proposed\
-**Version:** 1.9
+**Version:** 2.0
 
 The tasks of EPIC-11 in this repository, in the order they start. Each task holds everything its Trello card will say ([development-flow.md](https://github.com/huynguyennang-agilityio/tripmate-docs/blob/main/docs/development-flow.md), section 1). The behaviour, the design, the order of the cards across repositories, and the checkpoints are in the spec, section 6.
 
@@ -23,7 +23,7 @@ Test case levels are the letters of [test-strategy.md](https://github.com/huyngu
 | [F8](#f8) | Outbox | S | High | F3 | 3 |
 | [F12](#f12) | Contract publishing | S | High | F2, CT1 | 3 |
 | [F5](#f5) | Access declaration and token check | M | High | F4 | 4 |
-| [F6](#f6) | Rate limits | S | Low | F5 | 4 |
+| [F6](#f6) | Rate limits | S | High | F5 | 4 |
 | [F7](#f7) | Idempotency keys | M | High | F3, F5 | 4 |
 | [F10](#f10) | Logs, traces, metrics, and error reporting | M | High | F4 | 4 |
 | [F9](#f9) | Worker, scheduler, and cleanup | M | High | F7, F8 | 5 |
@@ -508,7 +508,7 @@ None.
 | Repository | `tripmate-backend` |
 | Machine | Mac 1, wave 4 |
 | Size | S |
-| Risk | Low: nothing on the High list: one part of `platform`, no table, no contract change |
+| Risk | High: it changes the contract, with `429` and `503` on every operation |
 | Depends on | F5 |
 | Requirements | -- |
 | Spec sections | 2.2 (Rate limits) |
@@ -518,6 +518,9 @@ None.
 - The general ceiling of security.md, section 2.2, on every route; a route can add its own limit with its own key.
 - Counters in Redis; over the limit returns `429 rate.limited` with `Retry-After` set to the seconds left in the window.
 - When Redis does not answer, a rate-limited route returns `503 server.unavailable`; the request is not let through.
+- The ceiling is `RATE_LIMIT_PER_MINUTE`, 300 when not given and off at `0`; it counts the IP address (the last entry of `X-Forwarded-For`) and, on a route that is not `public`, the user, in a fixed window; the health check is not counted.
+- The contract documents `429` with `Retry-After` and `503` on every operation except the health check.
+- The IP address is counted before the token check; the user, and a signed-in route's own limits, after it. A service can count a key itself (`count_limit`), such as a sign-in email.
 
 **Leaves out**
 
@@ -861,3 +864,4 @@ None.
 | 1.7 | 2026-11-26 | F12 scope, as the product owner decided before the tests: stubs are declared with `stub()` and return `501 server.not_implemented`; the CI job `contract` runs the example check and Schemathesis; the token is a secret of the environment `contracts`, which only `main` may use; the pull request comes from the one branch `backend/openapi`. |
 | 1.8 | 2026-11-26 | F15 scope, as the product owner decided before the code: a non-zero exit counts as failing; an error of the run is a command that cannot start (exit 126 or 127), a run killed by a signal, or output that matches the caller's no-test pattern; the runtime set-up is shown on one CI run, with no case. |
 | 1.9 | 2026-11-27 | New task F16, as the product owner decided during CT2: failing first runs the caller's setup command in the worktree of each test commit. |
+| 2.0 | 2026-11-27 | F6 scope and risk, as the product owner decided before the code: the ceiling `RATE_LIMIT_PER_MINUTE` (300, off at `0`), counted for the IP address from `X-Forwarded-For` and for the user, in a fixed window, with the health check left out; the contract documents `429` and `503`, so F6 is High risk; the IP address counted before the token check; a service counting a key itself. |
