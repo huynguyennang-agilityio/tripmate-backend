@@ -2,7 +2,8 @@
 
 - `stub()` declares a route that is only a contract: marked `x-stub: true`, answering
   `501 server.not_implemented`.
-- `check_examples()` names each stub operation with a response schema that has no example.
+- `check_examples()` names each stub operation with a response schema that has no example,
+  and each other operation with a success (`2xx`) response that has none (card F17).
 
 The generator and the CLI are the process entry point `app/contract.py` (`python -m app.contract
 generate|check <path>`); `python -m app.platform.contract ...` runs the same code.
@@ -100,21 +101,29 @@ def _has_example(contract: dict[str, Any], schema: Any, depth: int = 0) -> bool:
     return False
 
 
-def check_examples(contract: dict[str, Any]) -> list[str]:
-    """One message per stub operation with a response schema that has no example.
+def _is_success(status: str) -> bool:
+    """`200`, `204`, `2XX`: the answers a client's mock mode returns."""
+    return status.upper().startswith("2")
 
-    A message names the operation as `<METHOD> <path>`. Operations that are not
-    stubs are not checked. The argument is not changed.
+
+def check_examples(contract: dict[str, Any]) -> list[str]:
+    """One message per operation with a response that has no example.
+
+    A stub needs an example on every response with content (F12); any other operation
+    on every success (`2xx`) response with content (F17), because the mock modes of Web
+    and Mobile answer from these examples. A message names the operation as
+    `<METHOD> <path>`. The argument is not changed.
     """
     problems: list[str] = []
     for path, item in sorted(contract.get("paths", {}).items()):
         for method, operation in sorted(item.items()):
             if method not in HTTP_METHODS or not isinstance(operation, dict):
                 continue
-            if operation.get(STUB_MARK) is not True:
-                continue
+            is_stub = operation.get(STUB_MARK) is True
             missing = []
             for status, response in sorted(operation.get("responses", {}).items()):
+                if not is_stub and not _is_success(str(status)):
+                    continue
                 # A response may be a `$ref` to `components/responses`.
                 response = _resolve(contract, response)
                 if not isinstance(response, dict):
