@@ -78,7 +78,7 @@ from app.platform.access import Caller, public, signed_in
 from app.platform.db import get_session
 from app.platform.errors import AppError
 from app.platform.idempotency import idempotent
-from app.platform.rate_limits import rate_limit
+from app.platform.rate_limits import count_limit, rate_limit
 
 from . import CALLS, FAILING, RELEASE, STARTED
 
@@ -170,6 +170,28 @@ async def slow(record: Record, session: Session, response: Response) -> dict[str
     await RELEASE.wait()
     record_id = await write_record(session, response)
     return {"id": record_id, "name": record.name}
+
+
+@router.post("/__SEGMENT__/handler-unauthorized", status_code=201, dependencies=OPEN)
+async def handler_unauthorized(
+    record: Record, session: Session, response: Response
+) -> dict[str, str]:
+    CALLS.append("handler-unauthorized")
+    await write_record(session, response)
+    raise AppError(401, "auth.not_signed_in")
+
+
+@router.post("/__SEGMENT__/handler-limited", status_code=201, dependencies=OPEN)
+async def handler_limited(
+    record: Record, request: Request, session: Session, response: Response
+) -> dict[str, str]:
+    CALLS.append("handler-limited")
+    await write_record(session, response)
+    # A counter of this call alone: its second count is over the limit and raises the 429.
+    key = "__NAME__:handler-limited:" + str(uuid.uuid4())
+    await count_limit(request, key=key, limit=1, window_seconds=60)
+    await count_limit(request, key=key, limit=1, window_seconds=60)
+    return {"name": record.name}
 
 
 @router.post("/__SEGMENT__/text", status_code=201, dependencies=OPEN)

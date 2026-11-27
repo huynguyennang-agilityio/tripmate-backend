@@ -595,3 +595,65 @@ async def test_F7_extra_503_before_the_handler_is_not_stored_and_the_key_is_rele
     assert_status(retry, 201, "the retry with Redis up")
     assert_not_replayed(retry, "the retry with Redis up")
     assert probe.calls() == ["limited"]
+
+
+# -- Decisions of the product owner after test-check --------------------------------------
+
+
+def _assert_byte_for_byte_replay(replay, first, what: str) -> None:
+    assert_replay_of(replay, first, what)
+    assert replay.content == first.content, f"{what}: {replay.content!r} is not {first.content!r}"
+
+
+async def test_F7_extra_401_raised_by_the_handler_is_stored_and_replayed_without_running_again(
+    services, module_folder, probe_table
+) -> None:
+    # A 401 the handler itself raises, after the key is claimed, is a handler's 4xx: stored.
+    services()
+    probe = write_probe(module_folder, probe_table)
+    device, key = new_device(), new_key()
+
+    async with _client(build_app()) as client:
+        first = await client.post(
+            probe.path("handler-unauthorized"), json=BODY, headers=headers(device, key)
+        )
+        again = await client.post(
+            probe.path("handler-unauthorized"), json=BODY, headers=headers(device, key)
+        )
+
+    assert_error(first, 401, "auth.not_signed_in", "the handler raises 401")
+    assert_not_replayed(first, "the handler raises 401")
+    _assert_byte_for_byte_replay(again, first, "the same key and body after the handler's 401")
+    assert probe.calls() == ["handler-unauthorized"], "the handler ran again"
+    assert await stored_markers(probe_table) == [], "the handler's record was stored"
+    rows = await key_rows(key)
+    assert len(rows) == 1, rows
+    assert rows[0]["status"] == 401, rows
+    assert as_json(rows[0]["response_body"]) == first.json(), rows
+
+
+async def test_F7_extra_429_raised_by_the_handler_is_stored_and_replayed_without_running_again(
+    services, module_folder, probe_table
+) -> None:
+    # The handler counts with `count_limit` after the key is claimed and goes over the limit.
+    services()
+    probe = write_probe(module_folder, probe_table)
+    device, key = new_device(), new_key()
+
+    async with _client(build_app()) as client:
+        first = await client.post(
+            probe.path("handler-limited"), json=BODY, headers=headers(device, key)
+        )
+        again = await client.post(
+            probe.path("handler-limited"), json=BODY, headers=headers(device, key)
+        )
+
+    assert_error(first, 429, "rate.limited", "the handler raises 429")
+    assert_not_replayed(first, "the handler raises 429")
+    _assert_byte_for_byte_replay(again, first, "the same key and body after the handler's 429")
+    assert probe.calls() == ["handler-limited"], "the handler ran again"
+    assert await stored_markers(probe_table) == [], "the handler's record was stored"
+    rows = await key_rows(key)
+    assert len(rows) == 1, rows
+    assert rows[0]["status"] == 429, rows
+    assert as_json(rows[0]["response_body"]) == first.json(), rows

@@ -1374,6 +1374,13 @@ async def create_record(record: Record, session: Session, response: Response) ->
   no token, `429` over the route's own limit, `503` with Redis on a
   closed port): no row for the key, and a retry with the same key runs
   the handler.
+- A `401` or `429` that the handler itself raises, after the key is
+  claimed (`AppError(401, "auth.not_signed_in")`, and `count_limit` from
+  `app.platform.rate_limits` counted twice on a key of its own with
+  `limit=1`), is a handler's `4xx` (product owner, after test-check): it
+  is stored with the probe table empty and replayed for the same key and
+  body, the same status and the body byte for byte, with
+  `Idempotent-Replayed: true`; the handler does not run again.
 
 ### F7: The table
 
@@ -1430,5 +1437,6 @@ with the columns of data-model.md, section 6.3: `key`, `user_id`,
 | Extra | The same `text/plain` bytes; one space less (I) | The replay; `409 request.idempotency_mismatch` |
 | Extra | A replay (I) | Same `Location`, `ETag`, `Content-Type`; `Idempotent-Replayed: true`; no `X-Probe-Extra`; stored headers hold `location` and `etag`, not `x-probe-extra` |
 | Extra | `400` schema, `401`, `429`, `503` before the handler (I) | No row for the key; the retry with the same key runs |
+| Extra | `401` and `429` raised by the handler after it writes (I) | Stored with no record; the same status and body byte for byte with `Idempotent-Replayed: true`; the handler ran once |
 | Extra | The same key and body on another path, and with `PUT` (A) | `409 request.idempotency_mismatch`, both |
 | Extra | The contract (C) | The header, `400`, and `409` on the declaring operations only; the three codes in `PLATFORM_ERROR_CODES` |
