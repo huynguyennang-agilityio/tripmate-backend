@@ -84,7 +84,7 @@ async def test_F6_2_one_request_over_the_limit_is_429_with_retry_after_the_secon
     limits(ceiling=2)
     route_window = 10
     probe = write_probe(module_folder, route_limit=2, route_window=route_window)
-    ceiling_ip, route_ip = new_ip(), new_ip()
+    ceiling_ip = new_ip()
 
     async with client_for(build_app()) as client:
         # The general ceiling: 2 a minute for this IP address.
@@ -98,14 +98,15 @@ async def test_F6_2_one_request_over_the_limit_is_429_with_retry_after_the_secon
         over_answered = time.monotonic()
         ceiling_times = (first_sent, first_answered, over_sent, over_answered)
 
-        # The route's own limit: 2 in 10 seconds for this key.
+        # The route's own limit: 2 in 10 seconds for this key. Each request comes from a new
+        # IP address, so the third one is over the route's limit only, not the ceiling of 2.
         r_first_sent = time.monotonic()
-        r_first = await client.get(probe.limited, headers=headers(route_ip, probe_key="a"))
+        r_first = await client.get(probe.limited, headers=headers(new_ip(), probe_key="a"))
         r_first_answered = time.monotonic()
-        r_second = await client.get(probe.limited, headers=headers(route_ip, probe_key="a"))
+        r_second = await client.get(probe.limited, headers=headers(new_ip(), probe_key="a"))
         await asyncio.sleep(1.3)
         r_over_sent = time.monotonic()
-        r_over = await client.get(probe.limited, headers=headers(route_ip, probe_key="a"))
+        r_over = await client.get(probe.limited, headers=headers(new_ip(), probe_key="a"))
         r_over_answered = time.monotonic()
         route_times = (r_first_sent, r_first_answered, r_over_sent, r_over_answered)
 
@@ -241,6 +242,41 @@ async def test_F6_5_a_route_with_its_own_limit_and_key_gets_it_as_well_as_the_ge
     for n in range(4):
         assert_passes(new_keys[n], f"new key, request {n + 1} of the ceiling of 4")
     assert_limited(new_keys[4], "new key, request 5: over the general ceiling")
+
+
+# -- Over more than one limit (spec 2.2 and 5.1, version 2.8, no case of its own) ----------
+
+
+@pytest.mark.asyncio
+async def test_F6_extra_over_two_limits_gets_the_longest_wait(limits, module_folder) -> None:
+    limits(ceiling=2)
+    route_window = 10
+    probe = write_probe(module_folder, route_limit=2, route_window=route_window)
+    ip = new_ip()
+
+    async with client_for(build_app()) as client:
+        # One IP address and one key: the third request is over the ceiling of 2 a minute
+        # and over the route's own limit of 2 in 10 seconds; both windows began at the first.
+        first_sent = time.monotonic()
+        first = await client.get(probe.limited, headers=headers(ip, probe_key="a"))
+        first_answered = time.monotonic()
+        second = await client.get(probe.limited, headers=headers(ip, probe_key="a"))
+        await asyncio.sleep(1.3)
+        over_sent = time.monotonic()
+        over = await client.get(probe.limited, headers=headers(ip, probe_key="a"))
+        over_answered = time.monotonic()
+        times = (first_sent, first_answered, over_sent, over_answered)
+
+    assert_passes(first, "request 1")
+    assert_passes(second, "request 2")
+    retry_after = assert_limited(over, "request 3, over the ceiling and the route's limit")
+    lowest, highest = seconds_left_bounds(CEILING_WINDOW_SECONDS, *times)
+    r_lowest, r_highest = seconds_left_bounds(route_window, *times)
+    assert lowest <= retry_after <= highest, (
+        f"Retry-After {retry_after}: the longest wait, the ceiling's seconds left rounded up, "
+        f"is {lowest}..{highest} (the route limit's shorter wait is {r_lowest}..{r_highest})"
+    )
+    assert probe.calls() == ["limited", "limited"], "a handler ran for a request over the limit"
 
 
 # -- RATE_LIMIT_PER_MINUTE=0 (spec 2.2 and 5.1, no case of its own) ------------------------
