@@ -49,7 +49,8 @@ HEALTH_PATH = "/v1/health"
 ALGORITHM = "EdDSA"
 REQUIRED_CLAIMS = ["sub", "sid", "iat", "exp"]
 
-_CALLER_KEY = "caller"
+# Private to the platform: only `signed_in` sets it, so no other code can plant a caller.
+_CALLER_KEY = "_tripmate_platform_caller"
 _ACCESS_DEPENDENCIES: set[Callable[..., Any]] = set()
 
 

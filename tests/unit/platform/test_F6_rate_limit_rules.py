@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI, Request
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import NoScriptError
 
 from app.platform import rate_limits
 from app.platform.access import (
@@ -41,13 +42,14 @@ from app.platform.health import Resources
 from app.platform.modules import Registry
 from app.platform.rate_limits import (
     COUNT_SCRIPT,
+    COUNT_SCRIPT_SHA,
     client_ip,
+    count_limit,
     enforce,
     install_rate_limits,
     install_rate_limits_contract,
     rate_limit,
     retry_after_seconds,
-    seconds_to_wait,
 )
 
 ENV = {
@@ -61,18 +63,34 @@ ERROR_REF = {"$ref": "#/components/schemas/ErrorResponse"}
 class FakeRedis:
     """Counts like `COUNT_SCRIPT`: INCR, and the expiry set when the key is new."""
 
-    def __init__(self, *, left_ms: int = 60_000, fail: Exception | None = None) -> None:
+    def __init__(
+        self, *, left_ms: int = 60_000, fail: Exception | None = None, loaded: bool = True
+    ) -> None:
         self.counts: dict[str, int] = {}
-        self.calls: list[tuple[Any, ...]] = []
+        self.calls: list[tuple[Any, ...]] = []  # (script or sha, numkeys, *keys and windows)
         self.left_ms = left_ms
         self.fail = fail
+        self.loaded = loaded
 
-    async def eval(self, script: str, numkeys: int, key: str, window_ms: int) -> list[int]:
-        self.calls.append((script, numkeys, key, window_ms))
+    def _run(self, numkeys: int, args: tuple[Any, ...]) -> list[int]:
         if self.fail is not None:
             raise self.fail
-        self.counts[key] = self.counts.get(key, 0) + 1
-        return [self.counts[key], self.left_ms]
+        result: list[int] = []
+        for key in args[:numkeys]:
+            self.counts[key] = self.counts.get(key, 0) + 1
+            result += [self.counts[key], self.left_ms]
+        return result
+
+    async def evalsha(self, sha: str, numkeys: int, *args: Any) -> list[int]:
+        self.calls.append((sha, numkeys, *args))
+        if not self.loaded:
+            raise NoScriptError("NOSCRIPT")
+        return self._run(numkeys, args)
+
+    async def eval(self, script: str, numkeys: int, *args: Any) -> list[int]:
+        self.calls.append((script, numkeys, *args))
+        self.loaded = True
+        return self._run(numkeys, args)
 
 
 def _status(error: AppError) -> tuple[int, str, dict[str, str] | None]:
@@ -127,21 +145,42 @@ def test_F6_retry_after_is_whole_seconds_rounded_up_and_never_0(
 # -- Counting ------------------------------------------------------------------------------
 
 
-def test_F6_the_script_increments_and_sets_the_expiry_in_one_step() -> None:
-    for word in ("INCR", "PTTL", "PEXPIRE", "KEYS[1]", "ARGV[1]", "return"):
+def test_F6_the_script_counts_every_key_and_sets_the_expiry_in_one_step() -> None:
+    for word in ("INCR", "PTTL", "PEXPIRE", "KEYS[i]", "ARGV[i]", "#KEYS", "return"):
         assert word in COUNT_SCRIPT
+    assert len(COUNT_SCRIPT_SHA) == 40
 
 
 async def test_F6_up_to_the_limit_passes_and_one_over_waits_the_seconds_left() -> None:
     redis = FakeRedis(left_ms=2_500)
-    assert [await seconds_to_wait(redis, "k", 2, 10) for _ in range(3)] == [None, None, 3]
-    assert redis.calls[0] == (COUNT_SCRIPT, 1, "rate:k", 10_000)
+    await enforce(redis, [("k", 2, 10)])
+    await enforce(redis, [("k", 2, 10)])
+    with pytest.raises(AppError) as raised:
+        await enforce(redis, [("k", 2, 10)])
+    assert _status(raised.value) == (429, "rate.limited", {"Retry-After": "3"})
+    assert redis.calls[0] == (COUNT_SCRIPT_SHA, 1, "rate:k", 10_000)
+
+
+async def test_F6_all_keys_go_in_one_call_and_the_script_is_sent_when_redis_lacks_it() -> None:
+    redis = FakeRedis(loaded=False)
+    await enforce(redis, [("a", 5, 60), ("b", 5, 10)])
+    assert redis.calls == [
+        (COUNT_SCRIPT_SHA, 2, "rate:a", "rate:b", 60_000, 10_000),
+        (COUNT_SCRIPT, 2, "rate:a", "rate:b", 60_000, 10_000),
+    ]
+    await enforce(redis, [("a", 5, 60)])
+    assert redis.calls[-1][0] == COUNT_SCRIPT_SHA  # loaded now: no second `eval`
+    assert len(redis.calls) == 3
+
+
+async def test_F6_nothing_to_count_asks_redis_nothing() -> None:
+    await enforce(FakeRedis(fail=OSError("never called")), [])
 
 
 async def test_F6_redis_failing_is_503_server_unavailable() -> None:
     for failure in (RedisConnectionError("x"), OSError("x"), TimeoutError()):
         with pytest.raises(AppError) as raised:
-            await seconds_to_wait(FakeRedis(fail=failure), "k", 5, 10)
+            await enforce(FakeRedis(fail=failure), [("k", 5, 10)])
         assert _status(raised.value) == (503, "server.unavailable", None)
 
 
@@ -151,14 +190,16 @@ async def test_F6_every_key_is_counted_and_the_longest_wait_is_sent() -> None:
     with pytest.raises(AppError) as raised:
         await enforce(redis, [("a", 1, 60), ("b", 1, 60), ("c", 1, 60)])
     assert _status(raised.value) == (429, "rate.limited", {"Retry-After": "5"})
-    assert [call[2] for call in redis.calls] == ["rate:a", "rate:b", "rate:c"]
     assert redis.counts == {"rate:a": 10, "rate:b": 10, "rate:c": 1}
 
 
 async def test_F6_the_longest_of_two_waits_is_the_retry_after() -> None:
     class Waits(FakeRedis):
-        async def eval(self, script: str, numkeys: int, key: str, window_ms: int) -> list[int]:
-            return [5, 59_000 if key.endswith("long") else 9_000]
+        def _run(self, numkeys: int, args: tuple[Any, ...]) -> list[int]:
+            result: list[int] = []
+            for key in args[:numkeys]:
+                result += [5, 59_000 if key.endswith("long") else 9_000]
+            return result
 
     with pytest.raises(AppError) as raised:
         await enforce(Waits(), [("long", 1, 60), ("short", 1, 10)])
@@ -168,22 +209,84 @@ async def test_F6_the_longest_of_two_waits_is_the_retry_after() -> None:
     assert raised.value.headers == {"Retry-After": "59"}
 
 
-async def test_F6_enforce_passes_when_no_key_is_over() -> None:
+async def test_F6_a_key_within_its_limit_does_not_make_the_request_wait() -> None:
     await enforce(FakeRedis(), [("a", 1, 60), ("b", 3, 60)])
+
+
+def _request(app: FastAPI, **headers: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "app": app,
+            "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
+            "method": "GET",
+            "path": "/",
+        }
+    )
+
+
+def _app_with(redis: FakeRedis) -> FastAPI:
+    app = FastAPI()
+    app.state.resources = Resources("x", None, redis)  # type: ignore[arg-type]
+    return app
 
 
 async def test_F6_a_routes_own_limit_counts_its_own_key() -> None:
     redis = FakeRedis()
-    app = FastAPI()
-    app.state.resources = Resources("x", None, redis)  # type: ignore[arg-type]
-    request = Request(
-        {"type": "http", "app": app, "headers": [(b"x-key", b"abc")], "method": "GET", "path": "/"}
-    )
+    request = _request(_app_with(redis), **{"x-key": "abc"})
     check = rate_limit(limit=1, window_seconds=7, key=lambda r: "m:" + r.headers["x-key"])
     await check(request)
     with pytest.raises(AppError):
         await check(request)
     assert [call[2:] for call in redis.calls] == [("rate:route:m:abc", 7000)] * 2
+
+
+async def test_F6_a_limit_not_declared_on_the_route_is_counted_when_the_ceiling_is_on() -> None:
+    redis = FakeRedis()
+    request = _request(_app_with(redis))
+    request.scope["state"] = {"_tripmate_platform_rate_limits_counted": {id(object())}}
+    check = rate_limit(limit=1, window_seconds=7, key=lambda r: "m:x")
+    await check(request)
+    with pytest.raises(AppError):
+        await check(request)
+    assert redis.counts == {"rate:route:m:x": 2}
+
+
+@pytest.mark.parametrize(("limit", "window"), [(0, 5), (-1, 5), (5, 0), (5, -3), (0, 0)])
+async def test_F6_a_limit_or_window_under_1_is_refused_when_it_is_declared(
+    limit: int, window: int
+) -> None:
+    with pytest.raises(
+        ValueError, match=r"^a rate limit needs a limit and a window of at least 1$"
+    ):
+        rate_limit(limit=limit, window_seconds=window, key=lambda r: "k")
+    with pytest.raises(
+        ValueError, match=r"^a rate limit needs a limit and a window of at least 1$"
+    ):
+        await count_limit(
+            _request(_app_with(FakeRedis())), key="k", limit=limit, window_seconds=window
+        )
+
+
+def test_F6_a_limit_and_window_of_1_are_accepted() -> None:
+    rate_limit(limit=1, window_seconds=1, key=lambda r: "k")
+
+
+async def test_F6_a_service_counts_a_key_itself_with_its_own_prefix_and_ceiling_off() -> None:
+    redis = FakeRedis(left_ms=1_200)
+    request = _request(_app_with(redis))
+    await count_limit(request, key="signin:a@b.c", limit=2, window_seconds=900)
+    await count_limit(request, key="signin:a@b.c", limit=2, window_seconds=900)
+    with pytest.raises(AppError) as raised:
+        await count_limit(request, key="signin:a@b.c", limit=2, window_seconds=900)
+    assert _status(raised.value) == (429, "rate.limited", {"Retry-After": "2"})
+    assert redis.counts == {"rate:count:signin:a@b.c": 3}
+    assert redis.calls[0] == (COUNT_SCRIPT_SHA, 1, "rate:count:signin:a@b.c", 900_000)
+    with pytest.raises(AppError) as down:
+        await count_limit(
+            _request(_app_with(FakeRedis(fail=OSError("x")))), key="k", limit=1, window_seconds=1
+        )
+    assert down.value.status == 503
 
 
 # -- The pipeline --------------------------------------------------------------------------
@@ -253,6 +356,13 @@ def _app(
         ran.append("own")
         return {}
 
+    @app.get("/v1/attempt", dependencies=[Depends(public)])
+    async def attempt(request: Request, ok: bool = True) -> dict[str, str]:
+        ran.append("attempt")
+        if not ok:  # only a failed attempt counts
+            await count_limit(request, key="attempt:a", limit=1, window_seconds=30)
+        return {}
+
     install_device_id(app)
     install_request_id(app)
     return app, ran
@@ -287,24 +397,34 @@ async def test_F6_a_public_route_counts_the_ip_only_and_the_health_check_nothing
     assert over.headers["Retry-After"] == "60"
     assert over.json()["error"]["code"] == "rate.limited"
     assert ran == ["health", "open", "open", "open"]
-    assert all(call[3] == 60_000 for call in redis.calls)
+    assert all(call[-1] == 60_000 for call in redis.calls)
+    assert (
+        len(redis.calls) == 4
+    )  # one round trip per counted request; health and the unknown path none
 
 
-async def test_F6_a_signed_in_route_counts_the_ip_and_the_user_after_the_token_check() -> None:
+async def test_F6_a_signed_in_route_counts_the_ip_before_the_token_check_and_the_user_after() -> (
+    None
+):
     key = Ed25519PrivateKey.generate()
     user = uuid.uuid4()
     redis = FakeRedis()
-    app, ran = _app(key, redis, ceiling="1")
+    app, ran = _app(key, redis, ceiling="2")
     async with _client(app) as client:
         no_token = await client.get("/v1/me", headers=_headers())
-        assert redis.calls == []  # the token check comes before the count
+        # the IP address is counted before the token check; the user only after it
+        assert redis.counts == {"rate:ip:7.7.7.7": 1}
+        assert len(redis.calls) == 1
         auth = {"Authorization": f"Bearer {_token(key, user)}"}
         first = await client.get("/v1/me", headers=_headers(**auth))
         over = await client.get("/v1/me", headers=_headers(**auth))
     assert no_token.status_code == 401
     assert first.status_code == 200
     assert over.status_code == 429
-    assert redis.counts == {"rate:ip:7.7.7.7": 2, f"rate:user:{user}": 2}
+    assert redis.counts == {
+        "rate:ip:7.7.7.7": 3,
+        f"rate:user:{user}": 1,
+    }  # over by IP: no user count
     assert ran == ["me"]
 
 
@@ -389,7 +509,7 @@ def test_F6_every_operation_but_health_documents_429_with_retry_after_and_503() 
             assert unavailable["description"] == "A service the request needs is down"
             assert unavailable["content"]["application/json"]["schema"] == ERROR_REF
             assert "headers" not in unavailable
-    assert seen == 4
+    assert seen == 5
 
 
 def test_F6_a_response_already_documented_is_not_overwritten() -> None:
@@ -437,3 +557,72 @@ async def test_F6_a_request_with_no_connection_address_counts_for_unknown() -> N
     scope = {"type": "http", "app": app, "headers": [], "method": "GET", "path": "/v1/open"}
     await rate_limits.general_ceiling(Request(scope))
     assert redis.counts == {"rate:ip:unknown": 1}
+
+
+async def test_F6_two_forwarded_for_lines_count_the_last_entry_of_the_last_line() -> None:
+    redis = FakeRedis()
+    app, _ = _app(Ed25519PrivateKey.generate(), redis, ceiling="5")
+    headers = [
+        ("X-Device-Id", str(uuid.uuid4())),
+        ("X-Forwarded-For", "10.9.9.9"),  # the client's own line
+        ("X-Forwarded-For", "3.3.3.3"),  # the proxy's line
+    ]
+    async with _client(app) as client:
+        await client.get("/v1/open", headers=headers)
+    assert redis.counts == {"rate:ip:3.3.3.3": 1}
+
+
+async def test_F6_a_bad_token_is_limited_by_ip_before_the_token_check() -> None:
+    redis = FakeRedis()
+    redis.counts = {"rate:ip:7.7.7.7": 2}
+    app, ran = _app(Ed25519PrivateKey.generate(), redis, ceiling="2")
+    async with _client(app) as client:
+        response = await client.get("/v1/me", headers=_headers(Authorization="Bearer nope"))
+    assert response.status_code == 429
+    assert ran == []
+
+
+async def test_F6_a_service_counts_only_the_failed_attempts_with_the_ceiling_off() -> None:
+    redis = FakeRedis()
+    app, ran = _app(Ed25519PrivateKey.generate(), redis, ceiling="0")
+    async with _client(app) as client:
+        good = [await client.get("/v1/attempt", headers=_headers()) for _ in range(3)]
+        first_failure = await client.get("/v1/attempt?ok=false", headers=_headers())
+        second_failure = await client.get("/v1/attempt?ok=false", headers=_headers())
+    assert [r.status_code for r in good] == [200, 200, 200]
+    assert first_failure.status_code == 200
+    assert second_failure.status_code == 429
+    assert second_failure.headers["Retry-After"] == "60"
+    assert redis.counts == {"rate:count:attempt:a": 2}
+    assert ran == ["attempt"] * 5
+
+
+async def test_F6_a_caller_planted_in_the_request_state_is_not_taken_for_a_token() -> None:
+    app, ran = _app(Ed25519PrivateKey.generate(), FakeRedis(), ceiling="0")
+
+    @app.middleware("http")
+    async def plant(request: Request, call_next: Any) -> Any:
+        request.state.caller = Caller(uuid.uuid4(), uuid.uuid4())
+        return await call_next(request)
+
+    async with _client(app) as client:
+        response = await client.get("/v1/me", headers=_headers())
+    assert response.status_code == 401
+    assert ran == []
+
+
+async def test_F6_the_wait_of_the_key_that_is_over_is_the_one_sent() -> None:
+    class Lefts(FakeRedis):
+        def _run(self, numkeys: int, args: tuple[Any, ...]) -> list[int]:
+            return [1, 11_000, 4, 22_000, 1, 33_000][: 2 * numkeys]
+
+    with pytest.raises(AppError) as raised:
+        await enforce(Lefts(), [("a", 1, 60), ("b", 3, 60), ("c", 1, 60)])
+    assert raised.value.headers == {"Retry-After": "22"}
+
+
+def test_F6_the_counted_limits_are_kept_in_the_requests_state_under_a_private_key() -> None:
+    request = _request(_app_with(FakeRedis()))
+    rate_limits._counted(request).add(7)
+    assert rate_limits._counted(request) == {7}
+    assert request.scope["state"] == {"_tripmate_platform_rate_limits_counted": {7}}
