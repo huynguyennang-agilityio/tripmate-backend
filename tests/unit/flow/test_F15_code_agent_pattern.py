@@ -156,3 +156,30 @@ def test_F15_a_timeout_kills_the_runners_children_and_names_the_file(tmp_path: P
     assert time.monotonic() - started < 30
     assert FILE in str(raised.value)
     assert "timed out" in str(raised.value)
+
+
+def test_F15_a_moved_file_with_edits_is_asked_to_fail(tmp_path: Path) -> None:
+    failing_first = flowcheck("failing_first")
+    header = "".join(f"const line{i} = require('x{i}');\n" for i in range(8))
+    old = header + "test('old rule', () => {});\n"
+    new = header + "test('new settle rule', () => {});\n"
+    repo, base = init_repo(tmp_path / "repo", {"tests/split.test.js": old})
+    commit(repo, {"tests/split.test.js": None, "tests/settle.test.js": new}, "F99 Tests", test=True)
+    head = commit(repo, {"calc.js": "y\n"}, "F99 Code")
+    # The new file passes (exit 0) and is similar to the deleted one: it is still named.
+    assert failing_first.check(repo, base, head, _python("pass"), test_file_pattern=PATTERN) == [
+        "tests/settle.test.js"
+    ]
+
+
+def test_F15_a_file_moved_from_a_path_outside_the_pattern_is_asked_to_fail(
+    tmp_path: Path,
+) -> None:
+    failing_first = flowcheck("failing_first")
+    text = "const test = require('node:test');\ntest('ok', () => {});\n"
+    repo, base = init_repo(tmp_path / "repo", {"docs/a.txt": text})
+    commit(repo, {"docs/a.txt": None, "tests/a.test.js": text}, "F99 Tests", test=True)
+    head = commit(repo, {"calc.js": "y\n"}, "F99 Code")
+    assert failing_first.check(repo, base, head, _python("pass"), test_file_pattern=PATTERN) == [
+        "tests/a.test.js"
+    ]

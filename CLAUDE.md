@@ -194,8 +194,9 @@ always skipped here; never require it.
   F15 (move the workflow ref and `flowchecks-ref` together).
 - A run of a non-Python file is in error when it is killed by a signal (a negative return code), or
   exits 126 or 127, or cannot start, or prints the no-test pattern, or times out (the runner's whole
-  process group is killed). An exit of 128 or more from a wrapper counts as failing. A file that git
-  sees as renamed or moved by the test commit counts as changed, not added.
+  process group is killed). An exit of 128 or more from a wrapper counts as failing. A file that a test commit moves with
+  no change (git: 100% similar) from a path that also matches the pattern counts as changed, not
+  added; a move with edits is asked to fail (fails closed).
 - Known limits for other languages: a non-Python file is judged as a whole, so a test added to a file
   that already exists is not checked; a file deleted by an earlier commit of the pull request and
   re-added unchanged by a test commit is asked to fail; the caller's `no-test-pattern` must fit its

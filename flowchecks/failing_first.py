@@ -156,7 +156,7 @@ def added_tests(
             continue
         parent = f"{commit.sha}^"
         ids: list[str] = []
-        renamed: set[str] | None = None
+        moves: dict[str, str] | None = None
         matched = 0
         for path in _git.changed_files(repo, parent, commit.sha):
             if not matches_pattern(path, test_file_pattern):
@@ -170,9 +170,11 @@ def added_tests(
                 names = [n for n in after.functions if n not in before.functions]
                 ids += [_testsource.make_id(path, n) for n in names]
             elif before_text is None and after_text is not None:
-                if renamed is None:
-                    renamed = _renamed_paths(repo, parent, commit.sha)
-                if path not in renamed:
+                if moves is None:
+                    moves = _exact_moves(repo, parent, commit.sha)
+                source = moves.get(path)
+                # Only an exact move of a test file is not an added test; a move with edits is.
+                if source is None or not matches_pattern(source, test_file_pattern):
                     ids.append(path)
         print(
             f"  commit {commit.sha[:7]}: {matched} test file(s) match {test_file_pattern!r}",
@@ -183,20 +185,21 @@ def added_tests(
     return found
 
 
-def _renamed_paths(repo: str | os.PathLike[str], old: str, new: str) -> set[str]:
-    """New paths of the files that git sees as renamed or moved between two revisions."""
-    out = _git.git(repo, "diff", "--name-status", "-M", "-z", old, new)
+def _exact_moves(repo: str | os.PathLike[str], old: str, new: str) -> dict[str, str]:
+    """New path -> old path of each file that moved with no change (git: 100% similar)."""
+    out = _git.git(repo, "diff", "--name-status", "--find-renames=100%", "-z", old, new)
     fields = out.decode("utf-8", "replace").split("\0")
-    renamed: set[str] = set()
+    moves: dict[str, str] = {}
     i = 0
     while i < len(fields) and fields[i]:
         status = fields[i]
         if status[0] in "RC":
-            renamed.add(fields[i + 2])
+            if status[0] == "R":
+                moves[fields[i + 2]] = fields[i + 1]
             i += 3
         else:
             i += 2
-    return renamed
+    return moves
 
 
 def check(
