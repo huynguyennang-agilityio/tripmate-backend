@@ -193,12 +193,20 @@ always skipped here; never require it.
   runs with any `flowchecks-ref`; a caller that sets either must pin a `flowchecks-ref` that holds
   F15 (move the workflow ref and `flowchecks-ref` together).
 - Setup in each test commit (F16): each test commit that adds tests gets its own detached worktree, and
-  the step adds `--setup-command` only when the input is set and the checked-out `flowchecks` code
-  supports it (otherwise a `::notice::` says the setup runs only once, in the checkout). The step that
-  runs the setup once in the checkout stays: the backend's `uv run` in the worktrees uses the venv of
-  the checkout, and `uv sync --locked` in a worktree syncs that venv to the commit's lock. A caller
-  that needs the dependencies of each commit (for example `npm ci`, so `node_modules` matches that
-  commit's lock) must pin a `flowchecks-ref` that holds F16.
+  `flow-checks.yml` itself passes `--setup-command` (only when the input is set and the checked-out
+  `flowchecks` code supports it; otherwise a `::notice::` says the setup runs only once, in the
+  checkout). A caller that needs the dependencies of each commit (for example `npm ci`, so
+  `node_modules` matches that commit's lock) must pin a `flowchecks-ref` that holds F16 and move the
+  workflow ref (`uses: ...flow-checks.yml@<sha>`) and `flowchecks-ref` together. With an older workflow
+  ref the flag is never passed and no notice is printed. The step that runs the setup once in the
+  checkout stays, for two reasons: the backend's `uv run` in the worktrees uses the venv of the
+  checkout (`UV_PROJECT_ENVIRONMENT`; `uv sync --locked` in a worktree syncs that venv to the commit's
+  lock), and anything a setup writes to `GITHUB_ENV` or `GITHUB_PATH` (for example `install-oasdiff.sh`
+  setting `OASDIFF` in `tripmate-contracts`) reaches the Failing first step only from that earlier step;
+  the per-worktree runs set nothing for later steps.
+- Each test commit's setup runs under the same per-run `--timeout` (default 900 s), and all of them
+  count against the job's `timeout-minutes: 30`, so a caller with several slow setups should pass a
+  smaller timeout or raise the job limit.
 - A run of a non-Python file is in error when it is killed by a signal (a negative return code), or
   exits 126 or 127, or cannot start, or prints the no-test pattern, or times out (the runner's whole
   process group is killed). An exit of 128 or more from a wrapper counts as failing. A file that a test commit moves with

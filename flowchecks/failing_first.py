@@ -82,8 +82,23 @@ def _tail(out: str) -> str:
     )
 
 
-def _run(command: Sequence[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[bytes]:
-    """Run `command` in its own process group; on timeout kill the whole group, then raise."""
+KILL_GRACE_SECONDS = 10.0
+
+
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
+def _run(
+    command: Sequence[str], cwd: Path, timeout: float, *, reap_group: bool = False
+) -> subprocess.CompletedProcess[bytes]:
+    """Run `command` in its own process group; on timeout kill the whole group, then raise.
+
+    The TimeoutExpired carries the output captured so far. With `reap_group` (the setup command),
+    the group is killed after the command finished too, so a background child it started does not
+    keep running into the tests; the test runs keep their behaviour.
+    """
     proc = subprocess.Popen(
         command,
         cwd=cwd,
@@ -93,11 +108,19 @@ def _run(command: Sequence[str], cwd: Path, timeout: float) -> subprocess.Comple
     )
     try:
         stdout, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
-        raise
+    except subprocess.TimeoutExpired as expired:
+        _kill_group(proc)
+        partial = expired.output or b""
+        try:
+            rest, _ = proc.communicate(timeout=KILL_GRACE_SECONDS)
+            partial += rest or b""
+        except subprocess.TimeoutExpired as again:
+            # A grandchild that left the group still holds the pipe: give up on its output.
+            partial += again.output or b""
+        expired.output = partial
+        raise expired from None
+    if reap_group:
+        _kill_group(proc)
     return subprocess.CompletedProcess(command, proc.returncode, stdout)
 
 
@@ -243,7 +266,14 @@ def check(
                 for test in ids:
                     _run_one(tree, test_command, test, timeout, passing, problems, no_test)
             finally:
-                _git.git(repo, "worktree", "remove", "--force", str(tree))
+                try:
+                    _git.git(repo, "worktree", "remove", "--force", str(tree))
+                except _git.GitError as error:
+                    problems.append(f"commit {sha}: the worktree could not be removed: {error}")
+    try:
+        _git.git(repo, "worktree", "prune")
+    except _git.GitError as error:
+        problems.append(f"git worktree prune failed: {error}")
     if problems:
         raise RunError("\n".join(problems))
     return passing
@@ -253,10 +283,15 @@ def _run_setup(
     tree: Path, setup_command: str, sha: str, timeout: float, problems: list[str]
 ) -> bool:
     """Run the caller's setup in `tree`; True when it succeeded, else record the error."""
+    print(f"  commit {sha[:7]}: running the setup command", file=sys.stderr)
     try:
-        result = _run(["bash", "-c", setup_command], tree, timeout)
-    except subprocess.TimeoutExpired:
-        problems.append(f"commit {sha}: the setup command timed out after {timeout:.0f} seconds")
+        result = _run(["bash", "-c", setup_command], tree, timeout, reap_group=True)
+    except subprocess.TimeoutExpired as expired:
+        partial = (expired.output or b"").decode("utf-8", "replace")
+        problems.append(
+            f"commit {sha}: the setup command timed out after {timeout:.0f} seconds"
+            + (f":\n{_tail(partial)}" if partial else "")
+        )
         return False
     except OSError as error:
         problems.append(f"commit {sha}: the setup command cannot start: {error}")
